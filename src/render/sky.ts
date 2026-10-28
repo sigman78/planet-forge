@@ -13,7 +13,7 @@ export interface Sky {
   update(camera: THREE.PerspectiveCamera, pixelRatio: number): void;
 }
 
-export async function createSky(scene: THREE.Scene, shared: SharedUniforms, base = '/sky/'): Promise<Sky> {
+export async function createSky(scene: THREE.Scene, shared: SharedUniforms, base = `${import.meta.env.BASE_URL}sky/`): Promise<Sky> {
   const manifest = await (await fetch(base + 'manifest.json')).json();
   let background: THREE.Texture | null = null;
   try {

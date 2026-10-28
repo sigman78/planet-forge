@@ -54,7 +54,7 @@ async function main() {
   boot.textContent = 'LOADING MATERIALS…';
   const shared = createSharedUniforms();
   const [layers, sky] = await Promise.all([
-    loadTerrainTextures(renderer, '/textures/', undefined, (f) => (boot.textContent = `LOADING MATERIALS ${Math.round(f * 100)}%`)),
+    loadTerrainTextures(renderer, `${import.meta.env.BASE_URL}textures/`, undefined, (f) => (boot.textContent = `LOADING MATERIALS ${Math.round(f * 100)}%`)),
     createSky(scene, shared),
   ]);
 

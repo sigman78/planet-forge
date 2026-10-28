@@ -64,7 +64,7 @@ function makeArray(data: Uint8Array, size: number, layers: number, srgb: boolean
  */
 export async function loadTerrainTextures(
   renderer: THREE.WebGLRenderer,
-  base = '/textures/',
+  base = `${import.meta.env.BASE_URL}textures/`,
   size?: number,
   onProgress?: (frac: number) => void,
 ): Promise<TerrainTextureSet> {
