@@ -2,12 +2,13 @@ import * as THREE from 'three';
 import { Pane, type FolderApi } from 'tweakpane';
 import * as EssentialsPlugin from '@tweakpane/plugin-essentials';
 import { sampleDir } from './core/cube.ts';
-import type { PlanetData } from './core/types.ts';
+import type { PlanetBulk, PlanetData } from './core/types.ts';
 import { DEFAULT_PARAMS, GEN_PRESETS, PARAM_SCHEMA, presetParams, type GenParams } from './gen/params.ts';
-import { generate } from './app/generate.ts';
+import { generate, previewWorld } from './app/generate.ts';
 import { loadCached, storeCached, clearCache } from './app/cache.ts';
 import { Hologram } from './render/hologram.ts';
 import { Captions } from './app/captions.ts';
+import { ScanReadout } from './app/scan.ts';
 import { DEFAULT_ENV, applyLookHints, archetypeLabel, planetName, MIN_ATMO_DENSITY, type EnvParams } from './app/presets.ts';
 import { download, exportPlanet } from './app/export.ts';
 import { loadTerrainTextures } from './render/terrainTextures.ts';
@@ -139,6 +140,10 @@ async function main() {
     shared.uSkyAmbient.value.g += hc.g * hk;
     shared.uSkyAmbient.value.b += hc.b * hk;
     shared.uAmbient.value = env.ambient;
+    // Planetshine comes from the giant, which hangs roughly on the night side, a little to one side.
+    const faz = az + Math.PI * 0.75;
+    shared.uFillDir.value.set(Math.sin(faz), 0.25, Math.cos(faz)).normalize();
+    shared.uFillColor.value.set(env.fillColor).multiplyScalar(env.fill * env.sunIntensity);
     camera.fov = env.fov;
     camera.updateProjectionMatrix();
     controller.autoRotate = env.autoRotate;
@@ -165,6 +170,7 @@ async function main() {
     captions.stop();
     const t0 = performance.now();
     const params = structuredClone(gen);
+    const session = ++forgeSession;
     try {
       // Planets are cached in IndexedDB by parameters + generator version (not in dev: the generator changes).
       const useCache = state.cache && !import.meta.env.DEV;
@@ -172,6 +178,7 @@ async function main() {
       const cached = !!planet;
       if (ac.signal.aborted) return;
       if (!planet) {
+        scanStart(session, params, overlay);
         // Forging takes seconds: swap the old world for the hologram unless it finishes very quickly.
         const holoTimer = window.setTimeout(() => {
           if (ac.signal.aborted) return;
@@ -214,7 +221,7 @@ async function main() {
       applyEnv();
       applyLook();
       pane.refresh();
-      updateHud(planet, performance.now() - t0);
+      updateHud(planet, performance.now() - t0, session, params.seed);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
         console.error(e);
@@ -228,35 +235,59 @@ async function main() {
   }
   let framed = false;
   let lastFromCache = false;
+  let forgeSession = 0;
   function scheduleRegen() {
     if (!state.autoRegen) return;
     clearTimeout(regenTimer);
     regenTimer = window.setTimeout(() => regenerate(true), 250);
   }
 
-  function updateHud(p: PlanetData, ms: number) {
-    const info = p.info;
-    $('pname').textContent = info?.name ?? planetName(gen.seed);
-    $('pclass').textContent = `${archetypeLabel(info?.archetype ?? state.preset)} world · seed ${gen.seed}`;
-    const b = info?.bulk;
-    const rows: [string, string][] = [];
-    if (b) {
-      rows.push(['radius', `${b.radiusKm.toFixed(0)} km · g ${b.gravity.toFixed(2)} m/s²`]);
-      rows.push(['mass', `${b.massEarth.toFixed(3)} M⊕ · ρ ${b.densityGcc.toFixed(2)} g/cm³`]);
-      rows.push(['core', `${(b.coreRadiusFrac * 100).toFixed(0)}% of radius · Fe ${(b.ironFrac * 100).toFixed(0)}%`]);
-      rows.push(['age', `${b.ageGyr.toFixed(2)} Gyr · ${b.tectonics} lid`]);
-      rows.push(['surface', `${b.surfaceTempK.toFixed(0)} K · ${b.seaKind === 'none' ? 'dry' : `${b.seaKind} seas`}`]);
-      const pbar = b.atmospherePressureBar;
-      rows.push(['air', `${b.atmosphereKind} · ${pbar < 0.01 ? pbar.toExponential(1) : pbar.toFixed(2)} bar`]);
-    } else {
-      rows.push(['radius', `${(p.radius / 1000).toFixed(0)} km`]);
-    }
-    rows.push(['relief', `${(p.minHeight / 1000).toFixed(1)} … +${(p.maxHeight / 1000).toFixed(1)} km`]);
-    rows.push(['faces', `6 × ${p.N}² · ${lastFromCache ? 'from cache' : 'forged'} in ${(ms / 1000).toFixed(2)} s`]);
-    $('pfacts').innerHTML = rows.map(([k, v]) => `${k.padEnd(8)} <span>${esc(v)}</span>`).join('\n');
+  const scan = new ScanReadout($('pfacts'), $('pname'), $('pclass'));
+  let scanSession = -1;
 
+  const SUP = '⁰¹²³⁴⁵⁶⁷⁸⁹';
+  const sci = (v: number) => {
+    const [m, e] = v.toExponential(2).split('e');
+    return `${m}×10${String(Number(e)).replace(/\d/g, (d) => SUP[Number(d)]).replace('-', '⁻')}`;
+  };
+  function bulkRows(b: PlanetBulk): [string, string][] {
+    const pbar = b.atmospherePressureBar;
+    const massKg = b.massEarth * 5.972e24;
+    return [
+      ['radius', `${b.radiusKm.toFixed(0)} km · g ${b.gravity.toFixed(2)} m/s²`],
+      ['mass', `${sci(massKg)} kg · ρ ${b.densityGcc.toFixed(2)} g/cm³`],
+      ['core', `${(b.coreRadiusFrac * 100).toFixed(0)}% of radius · Fe ${(b.ironFrac * 100).toFixed(0)}%`],
+      ['ices', `${(b.volatileFrac * 100).toFixed(0)}% volatiles`],
+      ['age', `${b.ageGyr.toFixed(2)} Gyr · ${b.tectonics} lid`],
+      ['heat', `${b.heatFlow.toFixed(2)}× Earth flux · sun ${b.insolation.toFixed(3)}×`],
+      ['surface', `${b.surfaceTempK.toFixed(0)} K · ${b.seaKind === 'none' ? 'dry' : `${b.seaKind} seas`}`],
+      ['air', `${b.atmosphereKind} · ${pbar < 0.01 ? pbar.toExponential(1) : pbar.toFixed(2)} bar`],
+    ];
+  }
+  const classLabel = (archetype: string, seed: number) => `${archetypeLabel(archetype)} world · seed ${seed}`;
+
+  /** Scan readout of the bulk body as soon as a forge starts (the planning step is cheap). */
+  function scanStart(session: number, params: GenParams, fast: boolean) {
+    const pre = previewWorld(params);
+    scanSession = session;
+    scan.begin(pre.name, classLabel(pre.archetype, params.seed), bulkRows(pre.bulk), fast);
+  }
+
+  function updateHud(p: PlanetData, ms: number, session: number, seed: number) {
+    const info = p.info;
+    const rows: [string, string][] = [
+      ['relief', `${(p.minHeight / 1000).toFixed(1)} … +${(p.maxHeight / 1000).toFixed(1)} km`],
+      ['faces', `6 × ${p.N}² · ${lastFromCache ? 'from cache' : 'forged'} in ${(ms / 1000).toFixed(2)} s`],
+    ];
+    if (scanSession === session) scan.append(rows);
+    else {
+      // No scan running for this world (e.g. cache hit): quick full readout.
+      scanSession = session;
+      const head = info?.bulk ? bulkRows(info.bulk) : [['radius', `${(p.radius / 1000).toFixed(0)} km`] as [string, string]];
+      scan.begin(info?.name ?? planetName(seed), classLabel(info?.archetype ?? state.preset, seed), [...head, ...rows], true);
+    }
     const hist = info?.history ?? [];
-    captions.play(hist.map((h) => ({ when: h.gyrAgo > 0 ? `${h.gyrAgo.toFixed(2)} Ga` : 'now', title: h.stage, text: h.text })));
+    captions.play(hist.map((h) => ({ when: h.gyrAgo > 0 ? `${h.gyrAgo.toFixed(2)} Ga` : 'now', title: h.stage, text: h.text })), 2400);
   }
 
   // ---- Presets bar (archetypes) ----------------------------------------------------------------
@@ -386,6 +417,8 @@ async function main() {
   tLight.addBinding(env, 'sunIntensity', { label: 'sun intensity', min: 0, max: 30, step: 0.1 });
   tLight.addBinding(env, 'sunColor', { label: 'sun color' });
   tLight.addBinding(env, 'ambient', { label: 'space ambient', min: 0, max: 0.1, step: 0.0005 });
+  tLight.addBinding(env, 'fill', { label: 'planetshine', min: 0, max: 0.3, step: 0.005 });
+  tLight.addBinding(env, 'fillColor', { label: 'planetshine col' });
   const fPost = tLight.addFolder({ title: 'Camera & post' });
   fPost.addBinding(env, 'exposure', { min: 0.05, max: 5, step: 0.01 });
   fPost.addBinding(env, 'bloomStrength', { label: 'bloom', min: 0, max: 3, step: 0.01 });

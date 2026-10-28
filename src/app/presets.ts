@@ -26,6 +26,9 @@ export interface EnvParams {
   hazeH: number; // km
   hazeColor: string;
   ambient: number;
+  /** Planetshine fill from the parent giant, relative to the sun. */
+  fill: number;
+  fillColor: string;
   fov: number;
   autoRotate: number;
   autoTilt: boolean;
@@ -54,7 +57,9 @@ export const DEFAULT_ENV: EnvParams = {
   haze: 4,
   hazeH: 3,
   hazeColor: '#c9b49a',
-  ambient: 0.004,
+  ambient: 0.015,
+  fill: 0.12,
+  fillColor: '#c9b8a0',
   fov: 45,
   autoRotate: 0,
   autoTilt: true,

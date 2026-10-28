@@ -43,6 +43,8 @@ export function createSharedUniforms() {
     uTime: u(0),
     uSkyAmbient: u(new THREE.Color(0.1, 0.16, 0.28)),
     uAmbient: u(0.003),
+    uFillDir: u(new THREE.Vector3(-1, 0.2, 0).normalize()),
+    uFillColor: u(new THREE.Color(0, 0, 0)),
   };
 }
 export type SharedUniforms = ReturnType<typeof createSharedUniforms>;

@@ -25,6 +25,8 @@ uniform float uWetness;
 uniform float uChannels;
 uniform float uAmbient;
 uniform vec3  uSkyAmbient;
+uniform vec3  uFillDir;              // planetshine from the parent giant (broad, dim fill light)
+uniform vec3  uFillColor;
 uniform float uTime;
 uniform int   uDebug;
 uniform vec3  uLayerDebugColor[LAYERS];
@@ -397,6 +399,9 @@ void main() {
   vec3 col = brdf(albedo, rough, metal, N, V, Lsun) * sunCol * horizon * shadow * micro * cavity;
   float dayAmb = smoothstep(-0.25, 0.3, dot(n, Lsun));
   col += albedo * ao * terrAO * (uSkyAmbient * dayAmb + vec3(uAmbient)) * (0.6 + 0.4 * dot(N, n));
+  // Planetshine: the giant's disc lights the night side softly (wrapped Lambert, no shadows).
+  float fillW = clamp(dot(N, uFillDir) * 0.6 + 0.4, 0.0, 1.0) * clamp(dot(n, uFillDir) * 0.5 + 0.6, 0.0, 1.0);
+  col += albedo * ao * terrAO * uFillColor * fillW / PI;
 
   // --- Debug views ---------------------------------------------------------------------------------
   if (uDebug == 1) col = albedo;
