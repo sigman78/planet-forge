@@ -1,0 +1,155 @@
+{
+  "resolution": 1024,
+  "layers": [
+    {
+      "index": 0,
+      "name": "beach_sand",
+      "source": "ambientCG/Ground080",
+      "url": "https://ambientcg.com/a/Ground080",
+      "license": "CC0",
+      "albedo": "beach_sand_albedo.jpg",
+      "normal": "beach_sand_normal.jpg",
+      "orm": "beach_sand_orm.jpg",
+      "height": "beach_sand_height.jpg",
+      "tileMeters": 1.5,
+      "meanAlbedo": [
+        0.4615,
+        0.3436,
+        0.1648
+      ],
+      "meanRoughness": 0.6568
+    },
+    {
+      "index": 1,
+      "name": "grass",
+      "source": "ambientCG/Grass006",
+      "url": "https://ambientcg.com/a/Grass006",
+      "license": "CC0",
+      "albedo": "grass_albedo.jpg",
+      "normal": "grass_normal.jpg",
+      "orm": "grass_orm.jpg",
+      "height": "grass_height.jpg",
+      "tileMeters": 2.0,
+      "meanAlbedo": [
+        0.1166,
+        0.2199,
+        0.0228
+      ],
+      "meanRoughness": 0.7319
+    },
+    {
+      "index": 2,
+      "name": "forest",
+      "source": "ambientCG/Moss004",
+      "url": "https://ambientcg.com/a/Moss004",
+      "license": "CC0",
+      "albedo": "forest_albedo.jpg",
+      "normal": "forest_normal.jpg",
+      "orm": "forest_orm.jpg",
+      "height": "forest_height.jpg",
+      "tileMeters": 1.5,
+      "meanAlbedo": [
+        0.0356,
+        0.0837,
+        0.0101
+      ],
+      "meanRoughness": 0.6246
+    },
+    {
+      "index": 3,
+      "name": "dry_grass",
+      "source": "ambientCG/Ground072",
+      "url": "https://ambientcg.com/a/Ground072",
+      "license": "CC0",
+      "albedo": "dry_grass_albedo.jpg",
+      "normal": "dry_grass_normal.jpg",
+      "orm": "dry_grass_orm.jpg",
+      "height": "dry_grass_height.jpg",
+      "tileMeters": 1.75,
+      "meanAlbedo": [
+        0.3038,
+        0.1886,
+        0.0952
+      ],
+      "meanRoughness": 0.5595
+    },
+    {
+      "index": 4,
+      "name": "desert",
+      "source": "ambientCG/Ground097",
+      "url": "https://ambientcg.com/a/Ground097",
+      "license": "CC0",
+      "albedo": "desert_albedo.jpg",
+      "normal": "desert_normal.jpg",
+      "orm": "desert_orm.jpg",
+      "height": "desert_height.jpg",
+      "tileMeters": 2.5,
+      "meanAlbedo": [
+        0.5401,
+        0.3554,
+        0.1855
+      ],
+      "meanRoughness": 0.6524
+    },
+    {
+      "index": 5,
+      "name": "rock",
+      "source": "ambientCG/Rock060",
+      "url": "https://ambientcg.com/a/Rock060",
+      "license": "CC0",
+      "albedo": "rock_albedo.jpg",
+      "normal": "rock_normal.jpg",
+      "orm": "rock_orm.jpg",
+      "height": "rock_height.jpg",
+      "tileMeters": 4.0,
+      "meanAlbedo": [
+        0.1206,
+        0.1068,
+        0.0971
+      ],
+      "meanRoughness": 0.7559
+    },
+    {
+      "index": 6,
+      "name": "gravel",
+      "source": "ambientCG/Gravel024",
+      "url": "https://ambientcg.com/a/Gravel024",
+      "license": "CC0",
+      "albedo": "gravel_albedo.jpg",
+      "normal": "gravel_normal.jpg",
+      "orm": "gravel_orm.jpg",
+      "height": "gravel_height.jpg",
+      "tileMeters": 1.5,
+      "meanAlbedo": [
+        0.0757,
+        0.0735,
+        0.067
+      ],
+      "meanRoughness": 0.4723
+    },
+    {
+      "index": 7,
+      "name": "snow",
+      "source": "ambientCG/Snow010A",
+      "url": "https://ambientcg.com/a/Snow010A",
+      "license": "CC0",
+      "albedo": "snow_albedo.jpg",
+      "normal": "snow_normal.jpg",
+      "orm": "snow_orm.jpg",
+      "height": "snow_height.jpg",
+      "tileMeters": 3.0,
+      "meanAlbedo": [
+        0.7341,
+        0.8611,
+        0.9776
+      ],
+      "meanRoughness": 0.7114
+    }
+  ],
+  "water": {
+    "normal": "water_normal.jpg",
+    "source": "synthesized (FFT ocean spectrum, tools/fetch_textures.py)",
+    "license": "CC0",
+    "tileMeters": 12.0
+  }
+}

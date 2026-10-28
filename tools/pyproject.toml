@@ -1,0 +1,14 @@
+[project]
+name = "planet-forge-tools"
+version = "0.1.0"
+description = "Offline asset pipeline for Planet Forge (texture pack fetch/pack, HDR sky)"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=2.0",
+  "pillow>=11.0",
+  "requests>=2.32",
+  "scipy>=1.14",
+]
+
+[tool.uv]
+package = false
