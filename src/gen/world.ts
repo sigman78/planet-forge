@@ -4,7 +4,7 @@
 // Bodies are dwarf-planet / large-moon sized (≈200–900 km, 'wild' up to 1,800 km). Gravity is tiny, so relief
 // scales up with 1/g (and the drama knob): basins, volcanoes and canyons read on the silhouette.
 
-import type { GeoUnit, HistoryEvent, LookHints, PlanetBulk, PlanetInfo, SeaKind, TectonicRegime } from '../core/types.ts';
+import type { GeoUnit, HistoryEvent, LookHints, PlanetBulk, PlanetInfo, ResolvedParams, SeaKind, TectonicRegime } from '../core/types.ts';
 import { Rng } from './noise.ts';
 import type { Noise3 } from './noise.ts';
 import { ARCHETYPE_LABELS, pick } from './params.ts';
@@ -267,6 +267,8 @@ export interface WorldPlan {
   /** Orbital period around the giant parent in days (0 = not tidally locked to a giant). */
   orbitDays: number;
   tidal: number;
+  /** Resolved values of all AUTO knobs, keyed like GenParams. */
+  resolved: ResolvedParams;
   /** Resolved stage strengths (AUTO replaced). */
   s: {
     dichotomy: number; craterDensity: number; volcanoScale: number; riftStrength: number; scarps: number; lineae: number; chaos: number;
@@ -715,7 +717,15 @@ export function planWorld(p: GenParams): WorldPlan {
     : [10, 10];
   const capDome = capsAllowed ? softcap(2500 * gRel, 0.012 * capK * R) * relief * Math.min(1.5, s.polarCaps) : 0;
 
+  // What every AUTO knob resolved to, for the UI (sea volume is only known after the terrain; see buildInfo).
+  const resolved: ResolvedParams = {
+    distortion, radiusKm: bulk.radiusKm, ironFrac: bulk.ironFrac, volatileFrac: bulk.volatileFrac, ageGyr: bulk.ageGyr,
+    insolation: bulk.insolation, tidalHeating: tidal, ...s, basinCount, basinSize, plumeCount, riseCount, rays: rayCount,
+  };
+  if (seaMode === 'volume' || bulk.seaKind === 'none') resolved.seaVolume = seaMode === 'volume' ? seaValue : 0;
+
   return {
+    resolved,
     p, archetype, arch, bulk, name, orbitDays, tidal, s, seaMode, seaValue, relief, capK, distortion, figure, gRel, drama, icy: arch.icy,
     dichoAxis, dichoAmp, crustAmp, basins, oldCraters, youngCraters, rises, volcanoes, rifts, scarpList, chaosList,
     palimpsests, grooves, cantaloupe, capLat, capDome, stripes,
@@ -850,5 +860,8 @@ function atmoText(P: number): string {
 }
 
 export function buildInfo(plan: WorldPlan, st: SurfaceStats): PlanetInfo {
-  return { archetype: plan.archetype, name: plan.name, bulk: plan.bulk, history: buildHistory(plan, st), units: GEO_UNITS, look: lookHints(plan) };
+  return {
+    archetype: plan.archetype, name: plan.name, bulk: plan.bulk, history: buildHistory(plan, st), units: GEO_UNITS, look: lookHints(plan),
+    resolved: { ...plan.resolved, seaVolume: Math.round(st.seaGEL) },
+  };
 }

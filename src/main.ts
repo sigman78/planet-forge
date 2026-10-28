@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Pane, type FolderApi } from 'tweakpane';
 import * as EssentialsPlugin from '@tweakpane/plugin-essentials';
 import { sampleDir } from './core/cube.ts';
-import type { PlanetBulk, PlanetData } from './core/types.ts';
+import type { PlanetBulk, PlanetData, ResolvedParams } from './core/types.ts';
 import { DEFAULT_PARAMS, GEN_PRESETS, PARAM_SCHEMA, presetParams, type GenParams } from './gen/params.ts';
 import { generate, previewWorld } from './app/generate.ts';
 import { loadCached, storeCached, clearCache } from './app/cache.ts';
@@ -234,6 +234,7 @@ async function main() {
       applyEnv();
       applyLook();
       pane.refresh();
+      syncShown(planet.info?.resolved);
       updateHud(planet, performance.now() - t0, session, params.seed);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
@@ -350,9 +351,33 @@ async function main() {
     }
   });
   let genFolders: FolderApi[] = [];
+  // AUTO knobs (-1 in GenParams) show what they resolved to. The pane binds them to `shown`; moving a slider
+  // writes the value into `gen`, which pins it. `synced` is what the app last wrote into `shown`, so the change
+  // events that refresh() fires are told apart from user edits.
+  const shown: Record<string, number> = {};
+  const synced: Record<string, number> = {};
+  const autoRows = new Map<string, { binding: { element: HTMLElement; refresh(): void }; label: string }>();
+  let lastResolved: ResolvedParams = {};
+  function syncShown(resolved?: ResolvedParams) {
+    if (resolved) lastResolved = resolved;
+    else {
+      // Pinned bulk values move other AUTO values (e.g. heat sets the volcano count): re-plan, it is cheap.
+      lastResolved = { ...previewWorld(gen).resolved, seaVolume: lastResolved.seaVolume ?? 0 };
+    }
+    const g = gen as unknown as Record<string, number>;
+    for (const [key, row] of autoRows) {
+      const pinned = g[key] >= 0;
+      const v = pinned ? g[key] : (lastResolved[key] ?? 0);
+      shown[key] = synced[key] = v;
+      row.binding.element.classList.toggle('pf-auto', !pinned);
+      row.binding.element.title = pinned ? '' : 'auto: derived from the archetype and seed (move it to pin a value)';
+      row.binding.refresh();
+    }
+  }
   function rebuildGenPane() {
     for (const f of genFolders) f.dispose();
     genFolders = [];
+    autoRows.clear();
     const groups = new Map<string, FolderApi>();
     for (const entry of PARAM_SCHEMA) {
       let folder = groups.get(entry.group);
@@ -363,15 +388,42 @@ async function main() {
       }
       const opts: Record<string, unknown> = { label: entry.label };
       if (entry.options) opts.options = entry.options;
-      else if (typeof (gen as unknown as Record<string, unknown>)[entry.key] === 'number') Object.assign(opts, { min: entry.min, max: entry.max, step: entry.step });
-      folder.addBinding(gen as unknown as Record<string, unknown>, entry.key, opts).on('change', (ev) => {
-        if (ev.last !== false) scheduleRegen();
-      });
+      else if (typeof (gen as unknown as Record<string, unknown>)[entry.key] === 'number') {
+        Object.assign(opts, { min: entry.auto ? 0 : entry.min, max: entry.max, step: entry.step });
+      }
+      if (entry.auto) {
+        const key = entry.key;
+        shown[key] = synced[key] = 0;
+        const binding = folder.addBinding(shown, key, opts);
+        binding.on('change', (ev) => {
+          // A refresh, not the user (Tweakpane also snaps the value to the slider step and writes it back).
+          if (Math.abs(shown[key] - synced[key]) <= (entry.step ?? 0) * 0.5 + 1e-9) {
+            synced[key] = shown[key];
+            return;
+          }
+          (gen as unknown as Record<string, number>)[key] = shown[key];
+          synced[key] = shown[key];
+          if (ev.last !== false) {
+            syncShown();
+            scheduleRegen();
+          }
+        });
+        autoRows.set(key, { binding, label: entry.label });
+      } else {
+        folder.addBinding(gen as unknown as Record<string, unknown>, entry.key, opts).on('change', (ev) => {
+          if (ev.last !== false) {
+            if (entry.key === 'seed' || entry.key === 'archetype' || entry.key === 'drama') syncShown();
+            scheduleRegen();
+          }
+        });
+      }
     }
+    syncShown();
   }
   function newSeed() {
     gen.seed = Math.floor(Math.random() * 100000);
     pane.refresh();
+    syncShown();
     regenerate();
   }
 

@@ -1,4 +1,4 @@
-import type { PlanetBulk, PlanetData } from '../core/types.ts';
+import type { PlanetBulk, PlanetData, ResolvedParams } from '../core/types.ts';
 import type { GenParams } from '../gen/params.ts';
 import { generatePlanet, resolveParams } from '../gen/index.ts';
 import { worldPlan } from '../gen/pipeline.ts';
@@ -14,7 +14,7 @@ export function generate(params: GenParams, opts: GenOptions = {}): Promise<Plan
 }
 
 /** Bulk body + name for a parameter set, without generating any terrain (cheap, deterministic). */
-export function previewWorld(params: GenParams): { name: string; archetype: string; bulk: PlanetBulk } {
+export function previewWorld(params: GenParams): { name: string; archetype: string; bulk: PlanetBulk; resolved: ResolvedParams } {
   const plan = worldPlan(resolveParams(params));
-  return { name: plan.name, archetype: plan.archetype, bulk: plan.bulk };
+  return { name: plan.name, archetype: plan.archetype, bulk: plan.bulk, resolved: plan.resolved };
 }

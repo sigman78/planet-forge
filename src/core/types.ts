@@ -74,7 +74,12 @@ export interface PlanetInfo {
   history: HistoryEvent[];
   units: GeoUnit[];
   look: LookHints;
+  /** What each AUTO generator knob resolved to (keyed like GenParams). */
+  resolved?: ResolvedParams;
 }
+
+/** Resolved values of AUTO generator knobs, keyed by GenParams field name. */
+export type ResolvedParams = Record<string, number>;
 
 export interface PlanetData {
   /** Interior resolution of each cube face (texels per side, gutters excluded). */
