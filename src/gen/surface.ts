@@ -61,6 +61,8 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
     }
 
   const w = new Float64Array(8);
+  // Final weights per texel (normalised), blurred once before quantising (see below).
+  const wAll = new Float32Array(T * T * 8);
   const rockSlope = plan.p.rockSlope;
   const sea = plan.bulk.seaKind;
   const icy = plan.icy;
@@ -224,7 +226,23 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
       else if (arch === 'sulfur') unit = U.PLUME_DEPOSITS;
       else unit = lowland > 0.6 && plan.dichoAmp > 300 ? U.SMOOTH_PLAINS : U.HIGHLANDS;
 
-      writeSplat(w, splat0, splat1, idx * 4);
+      // Ragged material edges: where layers compete, a per-layer noise decides, so boundaries become irregular
+      // instead of following mask contours and texel staircases. Dominant layers barely change.
+      let wsum = 0, wmax = 0;
+      for (let l = 0; l < 8; l++) {
+        wsum += Math.max(w[l], 0);
+        wmax = Math.max(wmax, w[l]);
+      }
+      if (!isSea && wmax < 0.85 * wsum) {
+        const na = noise.fbm(px * 90 + 1.7, py * 90 - 8.3, pz * 90 + 4.1, 2);
+        const nb = noise.fbm(px * 90 - 6.2, py * 90 + 2.9, pz * 90 - 3.6, 2);
+        wsum = 0;
+        for (let l = 0; l < 8; l++) {
+          w[l] *= Math.exp(RAGGED * (RAG_C[l] * na + RAG_S[l] * nb));
+          wsum += Math.max(w[l], 0);
+        }
+      }
+      for (let l = 0; l < 8; l++) wAll[idx * 8 + l] = wsum > 0 ? Math.max(w[l], 0) / wsum : l === 0 ? 1 : 0;
       const o = idx * 4;
       climate[o] = clampByte(temp / 2);
       const wetness = isSea ? 1 : fluids ? Math.max(wet[idx], 0.3 * iceCover) : 0.3 * iceCover;
@@ -233,8 +251,32 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
       climate[o + 3] = unit;
     }
   }
+  // Soften the weights with a 3x3 binomial blur (interior texels; the gutters are refilled after assembly).
+  // Mask edges and slope-driven rock otherwise switch within a single texel, which reads as hard spots and
+  // pixel staircases on canyon walls.
+  for (let y = 0; y < T; y++)
+    for (let x = 0; x < T; x++) {
+      const idx = y * T + x;
+      if (x === 0 || y === 0 || x === T - 1 || y === T - 1) {
+        for (let l = 0; l < 8; l++) w[l] = wAll[idx * 8 + l];
+      } else {
+        w.fill(0);
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const k = (dx === 0 ? 2 : 1) * (dy === 0 ? 2 : 1);
+            const j = (idx + dy * T + dx) * 8;
+            for (let l = 0; l < 8; l++) w[l] += k * wAll[j + l];
+          }
+      }
+      writeSplat(w, splat0, splat1, idx * 4);
+    }
   return { splat0, splat1, climate };
 }
+
+/** Strength of the per-layer edge noise, and each layer's direction in the (na, nb) noise plane. */
+const RAGGED = 0.6;
+const RAG_C = Array.from({ length: 8 }, (_, l) => Math.cos(l * 2.39996));
+const RAG_S = Array.from({ length: 8 }, (_, l) => Math.sin(l * 2.39996));
 
 function clampByte(v: number): number {
   return v < 0 ? 0 : v > 255 ? 255 : Math.round(v);

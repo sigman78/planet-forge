@@ -94,6 +94,8 @@ export interface LookParams {
   macroVar: number;
   antiTile: number; // 0 = plain tiling, 1 = hex-tiling (no visible repetition)
   tintStrength: number; // 0 = raw textures, 1 = full per-world layer tints from the generator
+  /** 0..1: pulls each layer's brightness toward the world's coverage-weighted mean (softer material edges). */
+  albedoHarmony: number;
   wetness: number;
   channels: number; // darkening of erosion channels / outflow beds
   debug: number;
@@ -132,6 +134,7 @@ export const DEFAULT_LOOK: LookParams = {
   macroVar: 0.25,
   antiTile: 1,
   tintStrength: 1,
+  albedoHarmony: 0.3,
   wetness: 0.5,
   channels: 0.6,
   debug: 0,
@@ -147,6 +150,20 @@ export const DEFAULT_LOOK: LookParams = {
   wireframe: false,
 };
 
+/** Mean splat weight of each of the 8 layers over the planet (sparse sample). */
+function layerCoverage(data: PlanetData): number[] {
+  const cov = new Array(8).fill(0);
+  const n = data.splat0.length / 4;
+  for (let i = 0; i < n; i += 7) {
+    for (let c = 0; c < 4; c++) {
+      cov[c] += data.splat0[i * 4 + c];
+      cov[4 + c] += data.splat1[i * 4 + c];
+    }
+  }
+  const sum = cov.reduce((a, b) => a + b, 0) || 1;
+  return cov.map((c) => c / sum);
+}
+
 export class PlanetView {
   readonly group = new THREE.Group();
   readonly terrain: THREE.Mesh;
@@ -159,6 +176,7 @@ export class PlanetView {
   private geoCache = new Map<number, THREE.BufferGeometry>();
   private placeholder: THREE.DataArrayTexture;
   private figureM: Float32Array | null = null;
+  private coverage: number[] | null = null;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
@@ -309,6 +327,7 @@ export class PlanetView {
     U.tAO.value = this.tex.ao;
     U.uN.value = data.N;
     this.figureM = computeFigureM(data);
+    this.coverage = layerCoverage(data);
     this.shared.uPlanetRadius.value = data.radius / 1000;
     const colors = U.uUnitColors.value as THREE.Color[];
     for (const unit of data.info?.units ?? []) {
@@ -356,11 +375,29 @@ export class PlanetView {
     U.uWetness.value = look.wetness;
     U.uChannels.value = look.channels;
     const tints = this.data?.info?.look.layerTints;
-    (U.uLayerTint.value as THREE.Vector3[]).forEach((v, i) => {
+    const tintV = U.uLayerTint.value as THREE.Vector3[];
+    tintV.forEach((v, i) => {
       const t = tints?.[i] ?? [1, 1, 1];
       const k = look.tintStrength;
       v.set(1 + (t[0] - 1) * k, 1 + (t[1] - 1) * k, 1 + (t[2] - 1) * k);
     });
+    // Albedo harmony: the raw layers differ up to ~8:1 in brightness (dust vs basalt), so every splat edge is a
+    // hard contrast edge. Pull each layer's mean luminance toward the world's coverage-weighted geometric mean.
+    if (look.albedoHarmony > 0 && this.coverage) {
+      const lum = tintV.map((v, i) => {
+        const m = this.layers.layers[i]?.meanAlbedo ?? [0.2, 0.2, 0.2];
+        return Math.max(0.2126 * m[0] * v.x + 0.7152 * m[1] * v.y + 0.0722 * m[2] * v.z, 1e-3);
+      });
+      let lw = 0, cw = 0;
+      lum.forEach((l, i) => {
+        lw += this.coverage![i] * Math.log(l);
+        cw += this.coverage![i];
+      });
+      if (cw > 0) {
+        const target = Math.exp(lw / cw);
+        tintV.forEach((v, i) => v.multiplyScalar(THREE.MathUtils.clamp(Math.pow(target / lum[i], look.albedoHarmony), 0.4, 2.5)));
+      }
+    }
     U.uDebug.value = look.debug;
     this.terrainMat.wireframe = look.wireframe;
 

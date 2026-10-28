@@ -111,12 +111,13 @@ mat2 hexRot(vec2 v) {
 // and the sample count must be fixed because the D3D compiler flattens data-dependent branches.
 const int NLAY = 3;   // splat layers blended per pixel (texture cost scales with this)
 
-struct Hex { vec2 w; mat2 r1; mat2 r2; vec2 o1; vec2 o2; };
+// j: per-cell brightness jitter (x for cell 1, y for cell 2), so no two cells read as the same tile.
+struct Hex { vec2 w; mat2 r1; mat2 r2; vec2 o1; vec2 o2; vec2 j; };
 
 Hex makeHex(vec2 uvKm) {
   Hex h;
   if (gTileMix <= 0.0) {
-    h.w = vec2(1.0, 0.0); h.r1 = h.r2 = mat2(1.0); h.o1 = h.o2 = vec2(0.0);
+    h.w = vec2(1.0, 0.0); h.r1 = h.r2 = mat2(1.0); h.o1 = h.o2 = vec2(0.0); h.j = vec2(1.0);
     return h;
   }
   vec2 st = uvKm * (3.4641016 * uHexFreq);
@@ -136,6 +137,7 @@ Hex makeHex(vec2 uvKm) {
   h.w = w7 / (w7.x + w7.y);
   h.r1 = hexRot(v1); h.r2 = hexRot(v2);
   h.o1 = hash22(v1); h.o2 = hash22(v2);
+  h.j = 1.0 + 0.2 * gTileMix * (vec2(hash12(v1 + 17.1), hash12(v2 + 17.1)) - 0.5);
   return h;
 }
 
@@ -147,6 +149,7 @@ vec4 triAlbedo(Hex h, vec2 uv, vec2 gx, vec2 gy, float sc, float L, out vec2 W) 
   vec4 c2 = textureGrad(tAlbedo, vec3(h.r2 * uv + h.o2, L), h.r2 * gx, h.r2 * gy);
   W = mix(vec2(1.0), vec2(dot(c1.rgb, LUMA), dot(c2.rgb, LUMA)), 0.6) * h.w;
   W /= max(W.x + W.y, 1e-6);
+  c1.rgb *= h.j.x; c2.rgb *= h.j.y;
   return c1 * W.x + c2 * W.y;
 }
 
@@ -182,7 +185,9 @@ vec3 detailGrad(vec3 d, float h, vec4 fineStyle) {
   float fineM = (h < 0.0 ? 0.3 : mix(0.5, 1.4, smoothstep(300.0, 5000.0, h))) * uFineDetail;
   float a = 0.4;
   for (int k = 0; k < 8; k++) {
-    float f = 1.0 - smoothstep(0.1, 0.28, gDetailFootprint / s);
+    // Mean-footprint fade (reach), plus a Nyquist fade on the long axis: at grazing angles one pixel spans
+    // several wavelengths along the view, and point-sampled gradients would shimmer.
+    float f = (1.0 - smoothstep(0.1, 0.28, gDetailFootprint / s)) * (1.0 - smoothstep(0.35, 0.8, gFootprint / s));
     if (f <= 0.0) break;
     vec3 g;
     if (k < 3) {
@@ -279,17 +284,22 @@ void main() {
 
   int idx[NLAY];
   float wt[NLAY];
-  float wsum = 0.0;
   for (int k = 0; k < NLAY; k++) {
     int best = 0;
     float bw = -1.0;
     for (int i = 0; i < LAYERS; i++) if (w[i] > bw) { bw = w[i]; best = i; }
     idx[k] = best;
     wt[k] = max(bw, 0.0);
-    wsum += wt[k];
     w[best] = -1.0;
   }
-  for (int k = 0; k < NLAY; k++) wt[k] /= max(wsum, 1e-4);
+  // Continuity: subtract the strongest dropped layer, so a layer enters the top 3 at zero weight instead of
+  // popping in where the 3rd and 4th weights cross.
+  float w4 = 0.0;
+  for (int i = 0; i < LAYERS; i++) w4 = max(w4, w[i]);
+  float wsum = 0.0;
+  for (int k = 0; k < NLAY; k++) { wt[k] = max(wt[k] - w4, 0.0); wsum += wt[k]; }
+  if (wsum < 1e-4) { wt[0] = 1.0; wsum = 1.0; }
+  for (int k = 0; k < NLAY; k++) wt[k] /= wsum;
 
   // --- Triplanar setup (projection weights from macro normal) ------------------------------------
   vec3 bw = pow(abs(Nm), vec3(uTriSharp));
@@ -331,7 +341,11 @@ void main() {
   }
   float bsum = 0.0;
   for (int k = 0; k < NLAY; k++) { hb[k] = max(hb[k] - mx + 0.25, 0.0) * step(0.004, wt[k]); bsum += hb[k]; }
-  for (int k = 0; k < NLAY; k++) hb[k] /= max(bsum, 1e-4);
+  // Height blending only means something while the texture relief is resolved. Once a pixel covers a good part
+  // of a tile, the mips flatten the heights and the window just sharpens splat edges into hard spots, so fall
+  // back to the plain splat weights.
+  float farBlend = smoothstep(0.08, 0.5, gFootprint * uHexFreq / 0.55);
+  for (int k = 0; k < NLAY; k++) hb[k] = mix(hb[k] / max(bsum, 1e-4), wt[k], farBlend);
 
   vec3 albedo = vec3(0.0);
   vec3 orm = vec3(0.0);
