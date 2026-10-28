@@ -7,6 +7,24 @@ import * as THREE from 'three';
  * - Right drag (or shift+left): heading / pitch.
  * - Pitch automatically eases toward the horizon as you get close to the surface.
  */
+export interface ViewState {
+  lat: number;
+  lon: number;
+  altitude: number;
+  heading: number;
+  userPitch: number;
+}
+
+interface Flight {
+  from: ViewState;
+  to: ViewState;
+  t: number;
+  duration: number;
+  onDone?: () => void;
+}
+
+const wrapPi = (a: number) => a - 2 * Math.PI * Math.round(a / (2 * Math.PI));
+
 export class PlanetCameraController {
   lat = 0.35;
   lon = 0.6;
@@ -22,6 +40,17 @@ export class PlanetCameraController {
   surface: (dir: THREE.Vector3) => number = () => this.radius;
 
   private target = { lat: 0.35, lon: 0.6, altitude: 2400, heading: 0, userPitch: 0 };
+  /** Orbit inertia (rad/s in lat/lon), carried after the drag is released. */
+  private vel = { lat: 0, lon: 0 };
+  /** Recent drag steps, used to measure the release velocity. */
+  private samples: { t: number; lat: number; lon: number }[] = [];
+  /** Pitch and height above the ground from the last update (they scale drags). */
+  private pitch = Math.PI / 2;
+  private groundAlt = 2400;
+  private groundR = 800;
+  private flight: Flight | null = null;
+  /** Called when the user takes over (pointer or wheel input). */
+  onUserInput: (() => void) | null = null;
   private dragging: 'orbit' | 'look' | null = null;
   private last = new THREE.Vector2();
   private pointers = new Map<number, THREE.Vector2>();
@@ -40,13 +69,54 @@ export class PlanetCameraController {
     dom.style.touchAction = 'none';
   }
 
-  setView(v: Partial<{ lat: number; lon: number; altitude: number; heading: number; userPitch: number }>, instant = false) {
+  setView(v: Partial<ViewState>, instant = false) {
+    this.flight = null;
     Object.assign(this.target, v);
     if (instant) Object.assign(this, this.target);
   }
 
   get state() {
     return { ...this.target };
+  }
+
+  get flying() {
+    return this.flight !== null;
+  }
+
+  /**
+   * Fly to a view over `duration` seconds (ease in-out). Altitude moves in log space, angles take the short way
+   * round. Pointer or wheel input cancels the flight.
+   */
+  flyTo(v: Partial<ViewState>, duration: number, onDone?: () => void) {
+    const from: ViewState = { lat: this.lat, lon: this.lon, altitude: this.altitude, heading: this.heading, userPitch: this.userPitch };
+    const to: ViewState = { ...from, ...v };
+    to.lon = from.lon + wrapPi(to.lon - from.lon);
+    to.heading = from.heading + wrapPi(to.heading - from.heading);
+    to.altitude = THREE.MathUtils.clamp(to.altitude, this.minAltitude, this.maxAltitude);
+    this.vel.lat = this.vel.lon = 0;
+    this.flight = { from, to, t: 0, duration: Math.max(duration, 1e-3), onDone };
+  }
+
+  cancelFlight() {
+    this.flight = null;
+  }
+
+  /** Change the reference radius but keep the camera at the same distance from the centre. */
+  setRadius(R: number) {
+    const shift = this.radius - R;
+    this.radius = R;
+    const fix = (a: number) => Math.max(a + shift, R * 0.05);
+    this.altitude = fix(this.altitude);
+    this.target.altitude = fix(this.target.altitude);
+  }
+
+  /** The user takes over: stop any flight where the view is now. */
+  private takeOver() {
+    if (this.flight) {
+      this.flight = null;
+      Object.assign(this.target, { lat: this.lat, lon: this.lon, altitude: this.altitude, heading: this.heading, userPitch: this.userPitch });
+    }
+    this.onUserInput?.();
   }
 
   private onDown = (e: PointerEvent) => {
@@ -58,6 +128,10 @@ export class PlanetCameraController {
     }
     this.dragging = e.button === 2 || e.shiftKey ? 'look' : 'orbit';
     this.last.set(e.clientX, e.clientY);
+    // Grabbing the planet stops it.
+    this.vel.lat = this.vel.lon = 0;
+    this.samples.length = 0;
+    this.takeOver();
   };
 
   private onMove = (e: PointerEvent) => {
@@ -76,16 +150,25 @@ export class PlanetCameraController {
     this.last.set(e.clientX, e.clientY);
     const h = this.dom.clientHeight || 1;
     if (this.dragging === 'orbit') {
-      // Angular speed so that the ground under the cursor roughly follows the mouse.
-      const visibleAngle = (this.target.altitude / this.radius) * (this.camera.fov * Math.PI / 180);
-      const k = Math.min(visibleAngle, 2.2) / h;
+      // Angular speed so that the ground at the screen centre follows the mouse. When the view tilts toward the
+      // horizon that ground is much farther away than the altitude: alt / sin(pitch), at most the horizon.
+      const fovRad = (this.camera.fov * Math.PI) / 180;
+      const alt = Math.max(this.groundAlt, 1e-3);
+      const horizon = Math.sqrt(Math.max((this.groundR + alt) ** 2 - this.groundR ** 2, alt * alt));
+      const D = THREE.MathUtils.clamp(alt / Math.max(Math.sin(this.pitch), 0.15), alt, horizon);
+      const k = Math.min((D / this.radius) * fovRad, 2.2) / h;
       const ch = Math.cos(this.target.heading);
       const sh = Math.sin(this.target.heading);
       // Rotate screen motion by heading.
       const north = dy * ch + dx * sh;
       const east = -dx * ch + dy * sh;
+      const lat0 = this.target.lat;
       this.target.lat = THREE.MathUtils.clamp(this.target.lat + north * k, -1.55, 1.55);
-      this.target.lon += (east * k) / Math.max(Math.cos(this.target.lat), 0.05);
+      const dLon = (east * k) / Math.max(Math.cos(this.target.lat), 0.05);
+      this.target.lon += dLon;
+      const now = performance.now();
+      this.samples.push({ t: now, lat: this.target.lat - lat0, lon: dLon });
+      while (this.samples.length && now - this.samples[0].t > 100) this.samples.shift();
     } else {
       this.target.heading += (dx / h) * 2.5;
       this.target.userPitch = THREE.MathUtils.clamp(this.target.userPitch + (dy / h) * 2.0, -1.2, 1.2);
@@ -94,12 +177,29 @@ export class PlanetCameraController {
 
   private onUp = (e: PointerEvent) => {
     this.pointers.delete(e.pointerId);
-    if (this.pointers.size === 0) this.dragging = null;
+    if (this.pointers.size === 0) {
+      // Throw velocity from the last ~100 ms of the drag. A pause before letting go means no throw.
+      const now = performance.now();
+      const recent = this.samples.filter((p) => now - p.t < 100);
+      if (this.dragging === 'orbit' && recent.length >= 2 && now - recent[recent.length - 1].t < 50) {
+        const span = Math.max((now - recent[0].t) / 1000, 1 / 60);
+        let dLat = 0, dLon = 0;
+        for (const p of recent) {
+          dLat += p.lat;
+          dLon += p.lon;
+        }
+        this.vel.lat = dLat / span;
+        this.vel.lon = dLon / span;
+      }
+      this.samples.length = 0;
+      this.dragging = null;
+    }
     this.pinchDist = 0;
   };
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    this.takeOver();
     const delta = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
     this.zoomBy(Math.exp(delta * 0.0012));
   };
@@ -111,7 +211,34 @@ export class PlanetCameraController {
   private dir = new THREE.Vector3();
 
   update(dt: number) {
-    this.target.lon += this.autoRotate * dt;
+    if (this.flight) {
+      // Scripted flight drives the view directly; the target follows, so nothing eases afterwards.
+      const f = this.flight;
+      f.t = Math.min(f.t + dt / f.duration, 1);
+      const e = f.t * f.t * (3 - 2 * f.t);
+      const L = THREE.MathUtils.lerp;
+      this.lat = L(f.from.lat, f.to.lat, e);
+      this.lon = L(f.from.lon, f.to.lon, e);
+      this.altitude = Math.exp(L(Math.log(Math.max(f.from.altitude, 1e-3)), Math.log(Math.max(f.to.altitude, 1e-3)), e));
+      this.heading = L(f.from.heading, f.to.heading, e);
+      this.userPitch = L(f.from.userPitch, f.to.userPitch, e);
+      Object.assign(this.target, { lat: this.lat, lon: this.lon, altitude: this.altitude, heading: this.heading, userPitch: this.userPitch });
+      if (f.t >= 1) {
+        this.flight = null;
+        f.onDone?.();
+      }
+    } else {
+      this.target.lon += this.autoRotate * dt;
+      // Inertia: keep drifting after a throw, decaying over about 0.7 s.
+      if (!this.dragging && (this.vel.lat !== 0 || this.vel.lon !== 0)) {
+        this.target.lat = THREE.MathUtils.clamp(this.target.lat + this.vel.lat * dt, -1.55, 1.55);
+        this.target.lon += this.vel.lon * dt;
+        const d = Math.exp(-dt / 0.7);
+        this.vel.lat *= d;
+        this.vel.lon *= d;
+        if (Math.abs(this.vel.lat) + Math.abs(this.vel.lon) < 1e-5) this.vel.lat = this.vel.lon = 0;
+      }
+    }
     const a = 1 - Math.exp(-dt * 8);
     this.lat += (this.target.lat - this.lat) * a;
     this.lon += (this.target.lon - this.lon) * a;
@@ -152,6 +279,9 @@ export class PlanetCameraController {
     const horizonPitch = Math.acos(Math.min(ground / r, 1)) + 0.12;
     let pitch = THREE.MathUtils.lerp(horizonPitch, Math.PI / 2, t) - this.userPitch;
     pitch = THREE.MathUtils.clamp(pitch, -0.3, Math.PI / 2);
+    this.pitch = pitch;
+    this.groundAlt = altAboveGround;
+    this.groundR = ground;
 
     const view = fwd.clone().multiplyScalar(Math.cos(pitch)).addScaledVector(n, -Math.sin(pitch)).normalize();
     const up = fwd.clone().multiplyScalar(Math.sin(pitch)).addScaledVector(n, Math.cos(pitch)).normalize();

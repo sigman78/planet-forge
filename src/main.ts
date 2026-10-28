@@ -98,7 +98,8 @@ async function main() {
   const controller = new PlanetCameraController(camera, renderer.domElement);
   controller.surface = (dir) => {
     const d = view.data;
-    if (!d) return shared.uPlanetRadius.value;
+    // While the hologram stands in, the old terrain must not push the camera around.
+    if (!d || !view.group.visible) return controller.radius;
     return view.surfaceRadiusKm(dir, (x, y, z) => sampleDir(d.height, d.N, x, y, z));
   };
 
@@ -178,16 +179,24 @@ async function main() {
       const cached = !!planet;
       if (ac.signal.aborted) return;
       if (!planet) {
-        scanStart(session, params, overlay);
+        const pre = scanStart(session, params, overlay);
         // Forging takes seconds: swap the old world for the hologram unless it finishes very quickly.
         const holoTimer = window.setTimeout(() => {
           if (ac.signal.aborted) return;
           const swap = !overlay || !view.data;
-          holo.begin(controller.radius, params.seed, !swap);
+          holo.begin(swap ? pre.bulk.radiusKm : controller.radius, params.seed, !swap);
           if (swap) {
             view.group.visible = false;
             shared.uAtmoDensity.value = 0;
             shared.uHaze.value = 0;
+            // Pull back to the opening view while the hologram forges (the new radius is already known).
+            if (framed) {
+              const R = pre.bulk.radiusKm;
+              controller.setRadius(R);
+              controller.maxAltitude = R * 14;
+              controller.flyTo({ altitude: R * 2.6, lat: 0.3, heading: 0, userPitch: 0 }, 2.5);
+              pulledBack = true;
+            }
           }
         }, 150);
         try {
@@ -210,13 +219,17 @@ async function main() {
       holo.finish(planet.radius / 1000);
       const R = planet.radius / 1000;
       const prevR = controller.radius;
-      controller.radius = R;
+      controller.setRadius(R);
       controller.maxAltitude = R * 14;
-      // Small bodies vary a lot in size: reframe when the radius changes noticeably.
-      if (!framed || Math.abs(R - prevR) / prevR > 0.15) {
-        controller.setView({ altitude: R * 2.6 }, !framed);
+      // Small bodies vary a lot in size: reframe when the radius changes noticeably (the forge pull-back
+      // already did it on the hologram path).
+      if (!framed) {
+        controller.setView({ altitude: R * 2.6 }, true);
         framed = true;
+      } else if (!pulledBack && Math.abs(R - prevR) / prevR > 0.15) {
+        controller.flyTo({ altitude: R * 2.6 }, 0.8);
       }
+      pulledBack = false;
       if (state.autoLook && planet.info) applyLookHints(planet.info.look, env, look, planet.info.bulk, planet.info.archetype, gen.seed);
       applyEnv();
       applyLook();
@@ -234,6 +247,7 @@ async function main() {
     }
   }
   let framed = false;
+  let pulledBack = false;
   let lastFromCache = false;
   let forgeSession = 0;
   function scheduleRegen() {
@@ -271,6 +285,7 @@ async function main() {
     const pre = previewWorld(params);
     scanSession = session;
     scan.begin(pre.name, classLabel(pre.archetype, params.seed), bulkRows(pre.bulk), fast);
+    return pre;
   }
 
   function updateHud(p: PlanetData, ms: number, session: number, seed: number) {
