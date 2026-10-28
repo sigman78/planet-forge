@@ -34,6 +34,14 @@
       #progress .bar { height: 2px; background: var(--line); overflow: hidden; }
       #progress .fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 0.15s; }
       #progress .label { font: 11px 'JetBrains Mono', monospace; color: var(--dim); text-align: center; margin-bottom: 6px; letter-spacing: 0.08em; }
+      #timeline { position: fixed; left: 20px; bottom: 44px; width: min(520px, 46vw); max-height: 42vh; overflow-y: auto; font: 11px/1.45 'JetBrains Mono', monospace; color: var(--dim); background: linear-gradient(90deg, rgba(5, 8, 14, 0.7), rgba(5, 8, 14, 0)); padding: 8px 10px; border-left: 1px solid var(--line); scrollbar-width: thin; }
+      #timeline:empty { display: none; }
+      #timeline.collapsed .tl-row { display: none; }
+      #timeline .tl-title { font: 600 10px 'Chakra Petch', sans-serif; letter-spacing: 0.3em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+      #timeline .tl-title kbd { color: var(--dim); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font: 10px 'JetBrains Mono', monospace; letter-spacing: 0; margin-left: 6px; }
+      #timeline .tl-row { display: grid; grid-template-columns: 58px 96px 1fr; gap: 8px; padding: 2px 0; }
+      #timeline .tl-t { color: var(--accent2); text-align: right; }
+      #timeline .tl-s { color: var(--fg); }
       #presets { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; max-width: 60vw; }
       #presets button { font: 600 11px 'Chakra Petch', sans-serif; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg); background: var(--panel); border: 1px solid var(--line); padding: 7px 12px; border-radius: 2px; cursor: pointer; backdrop-filter: blur(6px); }
       #presets button:hover { border-color: var(--accent2); }
@@ -48,7 +56,7 @@
         #pane { width: calc(100vw - 24px); top: auto; bottom: 12px; max-height: 45vh; }
         #presets { top: auto; bottom: calc(45vh + 24px); max-width: 94vw; }
         #hud .name { font-size: 24px; }
-        #help { display: none; }
+        #help, #timeline { display: none; }
       }
     </style>
   </head>
@@ -61,9 +69,10 @@
       <div class="facts" id="pfacts"></div>
     </div>
     <div id="presets"></div>
+    <div id="timeline"></div>
     <div id="pane"></div>
     <div id="progress"><div class="label" id="plabel"></div><div class="bar"><div class="fill" id="pfill"></div></div></div>
-    <div id="help"><kbd>drag</kbd> orbit · <kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> look · <kbd>R</kbd> new seed · <kbd>H</kbd> hide UI · <kbd>1-9</kbd> debug views</div>
+    <div id="help"><kbd>drag</kbd> orbit · <kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> look · <kbd>R</kbd> new seed · <kbd>H</kbd> hide UI · <kbd>T</kbd> timeline · <kbd>1-9</kbd> debug views</div>
     <div id="boot">FORGING…</div>
     <script type="module" src="/src/main.ts"></script>
   </body>

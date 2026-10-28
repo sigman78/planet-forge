@@ -23,6 +23,8 @@ void main() {
   float ang = atan(vUv.y, vUv.x);
   float rays = pow(abs(cos(ang * 3.0)), 60.0) + pow(abs(cos(ang * 2.0 + 0.7)), 90.0) * 0.6;
   glow += rays * exp(-r * 5.0) * 0.12;
-  vec3 c = uSunColor * (disc * uDiscIntensity + glow * uDiscIntensity * 0.02);
+  // Window so the glare reaches exactly zero at the quad border.
+  glow *= 1.0 - smoothstep(0.35, 1.0, r);
+  vec3 c = uSunColor * (disc * uDiscIntensity + glow * uDiscIntensity * 0.006);
   gl_FragColor = vec4(c, 1.0);
 }

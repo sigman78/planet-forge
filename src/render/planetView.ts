@@ -11,7 +11,6 @@ import terrainCommon from '../shaders/terrain_common.glsl?raw';
 import terrainVert from '../shaders/terrain.vert.glsl?raw';
 import terrainFrag from '../shaders/terrain.frag.glsl?raw';
 import oceanGlsl from '../shaders/ocean.glsl?raw';
-import cloudsGlsl from '../shaders/clouds.glsl?raw';
 
 export const COMMON = `${cubeGlsl}\n${noiseGlsl}\n${atmoCommonGlsl}\n`;
 
@@ -23,11 +22,11 @@ export function splitShader(src: string): [string, string] {
 
 const u = <T>(value: T) => ({ value });
 
-/** Uniforms shared (by reference) between terrain, ocean, clouds and the atmosphere pass. */
+/** Uniforms shared (by reference) between terrain, ocean and the atmosphere pass. */
 export function createSharedUniforms() {
   return {
-    uPlanetRadius: u(800),
-    uAtmoRadius: u(860),
+    uPlanetRadius: u(1200),
+    uAtmoRadius: u(1260),
     uRayleigh: u(new THREE.Vector3(5.8e-3, 13.5e-3, 33.1e-3)),
     uRayleighH: u(8),
     uMie: u(4e-3),
@@ -37,42 +36,32 @@ export function createSharedUniforms() {
     uSunDir: u(new THREE.Vector3(1, 0.3, 0.4).normalize()),
     uSunColor: u(new THREE.Color(1, 0.97, 0.92).multiplyScalar(6)),
     uTime: u(0),
-    uCloudRot: u(new THREE.Matrix3()),
-    uCloudAlt: u(9),
-    uCloudCover: u(0.5),
-    uCloudShadow: u(0.6),
     uSkyAmbient: u(new THREE.Color(0.1, 0.16, 0.28)),
     uAmbient: u(0.003),
   };
 }
 export type SharedUniforms = ReturnType<typeof createSharedUniforms>;
 
-// Debug colours per splat layer.
-const LAYER_DEBUG = [0xe8d38c, 0x5fb33a, 0x1f5c25, 0xb59a4a, 0xe07b2f, 0x7a6d64, 0x3b3b40, 0xffffff];
-const BIOME_PALETTE = [
-  0x1b3d8f, 0x3d7fd1, 0xe8d38c, 0xffffff, 0xa0a8a0, 0x6d8f6a, 0x2d6b3a, 0x5fb33a, 0xb5c25a, 0xd9c27a, 0xe07b2f,
-  0x1f5c25, 0x0d4020, 0x8a7a5a, 0x7a6d64, 0x3b3b40, 0xc04020, 0x9050c0, 0x50c0c0, 0xc0c050, 0x808080, 0x404080,
-  0x804040, 0x408040,
-];
+// Debug colours per splat layer: dust, highland, basalt, sand, rock, gravel, ice, salt.
+const LAYER_DEBUG = [0xc08a5a, 0xd8d0c0, 0x2a2a30, 0xe8b860, 0x8a6a5a, 0x6a6a70, 0xe8f4ff, 0xf0e070];
+const MAX_UNITS = 32;
 
 export interface LookParams {
   heightExaggeration: number;
   seaFloorScale: number;
-  detailAmp: number;          // metres of procedural detail relief
-  detailScale: number;        // km
-  textureScale: number;        // world-scale multiplier for texture tiles (stylised: >1 = bigger tiles)
+  detailAmp: number; // metres of procedural detail relief
+  detailScale: number; // km
+  textureScale: number; // world-scale multiplier for texture tiles (stylised: >1 = bigger tiles)
   normalStrength: number;
   macroNormal: number;
   heightBlend: number;
   triSharp: number;
   macroVar: number;
-  climateTint: number;
+  tintStrength: number; // 0 = raw textures, 1 = full per-world layer tints from the generator
   wetness: number;
-  rivers: number;
-  cityLights: number;
-  vegTint: string;
+  channels: number; // darkening of erosion channels / outflow beds
   debug: number;
-  oceanMode: number;           // 0 water, 1 lava, 2 ice, 3 none
+  oceanMode: number; // 0 water, 1 lava, 2 ice, 3 none
   deepColor: string;
   shallowColor: string;
   clarity: number;
@@ -81,15 +70,12 @@ export interface LookParams {
   foam: number;
   lavaColor: string;
   lavaGlow: number;
-  cloudsVisible: boolean;
-  cloudOpacity: number;
-  cloudTint: string;
   wireframe: boolean;
 }
 
 export const DEFAULT_LOOK: LookParams = {
   heightExaggeration: 1,
-  seaFloorScale: 0.6,
+  seaFloorScale: 0.8,
   detailAmp: 350,
   detailScale: 6,
   textureScale: 250,
@@ -98,11 +84,9 @@ export const DEFAULT_LOOK: LookParams = {
   heightBlend: 0.6,
   triSharp: 6,
   macroVar: 0.25,
-  climateTint: 0.6,
-  wetness: 0.6,
-  rivers: 1,
-  cityLights: 0,
-  vegTint: '#ffffff',
+  tintStrength: 1,
+  wetness: 0.5,
+  channels: 0.6,
   debug: 0,
   oceanMode: 0,
   deepColor: '#03142e',
@@ -113,9 +97,6 @@ export const DEFAULT_LOOK: LookParams = {
   foam: 1,
   lavaColor: '#ff4a10',
   lavaGlow: 14,
-  cloudsVisible: true,
-  cloudOpacity: 0.95,
-  cloudTint: '#ffffff',
   wireframe: false,
 };
 
@@ -123,10 +104,8 @@ export class PlanetView {
   readonly group = new THREE.Group();
   readonly terrain: THREE.Mesh;
   readonly ocean: THREE.Mesh;
-  readonly clouds: THREE.Mesh;
   readonly terrainMat: THREE.ShaderMaterial;
   readonly oceanMat: THREE.ShaderMaterial;
-  readonly cloudMat: THREE.ShaderMaterial;
   data: PlanetData | null = null;
   private tex: PlanetTextures | null = null;
   private meshSegments = 0;
@@ -148,9 +127,7 @@ export class PlanetView {
       tSplat0: u<THREE.Texture>(this.placeholder),
       tSplat1: u<THREE.Texture>(this.placeholder),
       tClimate: u<THREE.Texture>(this.placeholder),
-      tClouds: u<THREE.Texture>(this.placeholder),
       uN: u(1),
-      uCloudN: u(1),
       uRadius: shared.uPlanetRadius,
       uHeightScale: u(0.001),
       uSeaFloorScale: u(DEFAULT_LOOK.seaFloorScale),
@@ -158,7 +135,6 @@ export class PlanetView {
       uDetailScale: u(DEFAULT_LOOK.detailScale),
     };
 
-    const tilesPerKm = layers.layers.map(() => 1);
     this.terrainMat = new THREE.ShaderMaterial({
       uniforms: {
         ...shared,
@@ -166,21 +142,18 @@ export class PlanetView {
         tAlbedo: u(layers.albedoHeight),
         tNormal: u(layers.normal),
         tOrm: u(layers.orm),
-        uLayerScale: u(tilesPerKm),
+        uLayerScale: u(layers.layers.map(() => 1)),
         uLayerTint: u(layers.layers.map(() => new THREE.Vector3(1, 1, 1))),
         uNormalStrength: u(1),
         uMacroNormal: u(1),
         uHeightBlend: u(0.6),
         uTriSharp: u(6),
         uMacroVar: u(0.25),
-        uClimateTint: u(0.6),
-        uWetness: u(0.6),
-        uRiverAmount: u(1),
-        uRiverColor: u(new THREE.Color(0.02, 0.05, 0.08)),
-        uCityLights: u(0),
+        uWetness: u(0.5),
+        uChannels: u(0.6),
         uDebug: u(0),
         uLayerDebugColor: u(LAYER_DEBUG.map((c) => new THREE.Color(c))),
-        uBiomeColors: u(BIOME_PALETTE.map((c) => new THREE.Color(c))),
+        uUnitColors: u(Array.from({ length: MAX_UNITS }, () => new THREE.Color(0.5, 0.5, 0.5))),
       },
       vertexShader: COMMON + terrainCommon + terrainVert,
       fragmentShader: COMMON + terrainCommon + terrainFrag,
@@ -208,30 +181,11 @@ export class PlanetView {
       depthWrite: true,
     });
 
-    const [cv, cf] = splitShader(cloudsGlsl);
-    this.cloudMat = new THREE.ShaderMaterial({
-      uniforms: {
-        ...shared,
-        tClouds: planetU.tClouds,
-        uCloudN: planetU.uCloudN,
-        uRadius: shared.uPlanetRadius,
-        uCloudOpacity: u(0.95),
-        uCloudTint: u(new THREE.Color(1, 1, 1)),
-      },
-      vertexShader: COMMON + cv,
-      fragmentShader: COMMON + cf,
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-
     this.terrain = new THREE.Mesh(new THREE.BufferGeometry(), this.terrainMat);
     this.ocean = new THREE.Mesh(createCubeSphereGeometry(160), this.oceanMat);
-    this.clouds = new THREE.Mesh(createCubeSphereGeometry(96), this.cloudMat);
-    for (const m of [this.terrain, this.ocean, this.clouds]) m.frustumCulled = false;
+    for (const m of [this.terrain, this.ocean]) m.frustumCulled = false;
     this.ocean.renderOrder = 1;
-    this.clouds.renderOrder = 2;
-    this.group.add(this.terrain, this.ocean, this.clouds);
+    this.group.add(this.terrain, this.ocean);
   }
 
   setMeshSegments(segments: number) {
@@ -250,16 +204,17 @@ export class PlanetView {
     U.tSplat0.value = this.tex.splat0;
     U.tSplat1.value = this.tex.splat1;
     U.tClimate.value = this.tex.climate;
-    U.tClouds.value = this.tex.clouds;
     U.uN.value = data.N;
-    U.uCloudN.value = data.cloudN;
     this.shared.uPlanetRadius.value = data.radius / 1000;
+    const colors = U.uUnitColors.value as THREE.Color[];
+    for (const unit of data.info?.units ?? []) {
+      if (unit.id >= 0 && unit.id < MAX_UNITS) colors[unit.id].setRGB(unit.color[0], unit.color[1], unit.color[2], THREE.SRGBColorSpace);
+    }
     old?.dispose();
   }
 
   applyLook(look: LookParams) {
     const U = this.terrainMat.uniforms;
-    const R = this.shared.uPlanetRadius.value;
     U.uHeightScale.value = 0.001 * look.heightExaggeration;
     U.uSeaFloorScale.value = look.seaFloorScale;
     U.uDetailAmp.value = look.detailAmp;
@@ -271,14 +226,13 @@ export class PlanetView {
     U.uHeightBlend.value = look.heightBlend;
     U.uTriSharp.value = look.triSharp;
     U.uMacroVar.value = look.macroVar;
-    U.uClimateTint.value = look.climateTint;
     U.uWetness.value = look.wetness;
-    U.uRiverAmount.value = look.rivers;
-    U.uCityLights.value = look.cityLights;
-    const veg = new THREE.Color(look.vegTint);
+    U.uChannels.value = look.channels;
+    const tints = this.data?.info?.look.layerTints;
     (U.uLayerTint.value as THREE.Vector3[]).forEach((v, i) => {
-      if (i >= 1 && i <= 3) v.set(veg.r, veg.g, veg.b);
-      else v.set(1, 1, 1);
+      const t = tints?.[i] ?? [1, 1, 1];
+      const k = look.tintStrength;
+      v.set(1 + (t[0] - 1) * k, 1 + (t[1] - 1) * k, 1 + (t[2] - 1) * k);
     });
     U.uDebug.value = look.debug;
     this.terrainMat.wireframe = look.wireframe;
@@ -294,15 +248,9 @@ export class PlanetView {
     (O.uLavaColor.value as THREE.Color).set(look.lavaColor);
     O.uLavaGlow.value = look.lavaGlow;
     this.ocean.visible = look.oceanMode !== 3 && look.debug === 0;
-
-    const C = this.cloudMat.uniforms;
-    C.uCloudOpacity.value = look.cloudOpacity;
-    (C.uCloudTint.value as THREE.Color).set(look.cloudTint);
-    this.clouds.visible = look.cloudsVisible && look.debug === 0;
-    void R;
   }
 
-  /** Terrain surface radius (km, displaced) under a world direction — used for camera collision. */
+  /** Terrain surface radius (km, displaced) under a world direction, used for camera collision. */
   surfaceRadiusKm(dir: THREE.Vector3, sampler: (x: number, y: number, z: number) => number): number {
     const R = this.shared.uPlanetRadius.value;
     const hM = sampler(dir.x, dir.y, dir.z);
@@ -310,6 +258,7 @@ export class PlanetView {
     const ex = (hM < 0 ? hM * U.uSeaFloorScale.value : hM) * U.uHeightScale.value;
     // Margin for the procedural detail relief that the CPU heightmap does not contain.
     const detail = U.uDetailAmp.value * 1.6 * U.uHeightScale.value;
-    return Math.max(R, R + ex + detail);
+    const sea = this.ocean.visible ? R : -Infinity;
+    return Math.max(sea, R + ex + detail);
   }
 }

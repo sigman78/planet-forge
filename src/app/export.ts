@@ -12,7 +12,6 @@ export function exportPlanet(planet: PlanetData, meta: Record<string, unknown>):
     { name: 'splat0', data: planet.splat0, dtype: 'u8', shape: [6, planet.T, planet.T, 4] },
     { name: 'splat1', data: planet.splat1, dtype: 'u8', shape: [6, planet.T, planet.T, 4] },
     { name: 'climate', data: planet.climate, dtype: 'u8', shape: [6, planet.T, planet.T, 4] },
-    { name: 'clouds', data: planet.clouds, dtype: 'u8', shape: [6, planet.cloudN + 2, planet.cloudN + 2] },
   ];
   const align = (n: number) => (n + 15) & ~15;
   const descr: Record<string, { offset: number; bytes: number; dtype: string; shape: number[] }> = {};
@@ -27,7 +26,7 @@ export function exportPlanet(planet: PlanetData, meta: Record<string, unknown>):
     minHeight: planet.minHeight,
     maxHeight: planet.maxHeight,
     layers: LAYERS,
-    cloudN: planet.cloudN,
+    info: planet.info ?? null,
     meta,
     blobs: descr,
   };

@@ -12,10 +12,8 @@ void main() {
 //#FRAGMENT
 #define PI 3.14159265359
 uniform sampler2DArray tHeight;
-uniform sampler2DArray tClouds;
 uniform sampler2D tWaterNormal;
 uniform float uN;
-uniform float uCloudN;
 uniform float uRadius;
 uniform int   uMode;
 uniform float uTime;
@@ -29,19 +27,8 @@ uniform vec3  uSkyAmbient;
 uniform float uAmbient;
 uniform vec3  uLavaColor;
 uniform float uLavaGlow;
-uniform float uCloudShadow;
-uniform float uCloudAlt;
-uniform float uCloudCover;
-uniform mat3  uCloudRot;
 varying vec3 vDir;
 varying vec3 vWorldPos;
-
-float cloudCoverAt(vec3 dir) {
-  vec3 cd = uCloudRot * dir;
-  float c = texture(tClouds, cubeTexCoord(cd, uCloudN)).r;
-  float detail = fbm3(cd * 40.0 + vec3(0.0, uTime * 0.01, 0.0));
-  return smoothstep(0.5 - uCloudCover * 0.5, 0.75 - uCloudCover * 0.4, c + detail * 0.18);
-}
 
 vec3 sampleWaterNormal(vec2 uv) { return texture(tWaterNormal, uv).xyz * 2.0 - 1.0; }
 
@@ -79,9 +66,7 @@ void main() {
   vec3 L = uSunDir;
   vec3 sunCol = sunLightAt(vWorldPos);
   float camDist = length(cameraPosition - vWorldPos);
-  float rc = uRadius + uCloudAlt;
-  float tCloud = raySphere(vWorldPos, L, rc).y;
-  float shadow = 1.0 - uCloudShadow * cloudCoverAt(normalize(vWorldPos + L * max(tCloud, 0.0)));
+  float shadow = 1.0;
   float horizon = smoothstep(-0.02, 0.06, dot(n, L));
   float dayAmb = smoothstep(-0.25, 0.3, dot(n, L));
 

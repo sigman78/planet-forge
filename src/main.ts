@@ -1,32 +1,33 @@
 import * as THREE from 'three';
-import { Pane, type FolderApi, type TabPageApi } from 'tweakpane';
+import { Pane, type FolderApi } from 'tweakpane';
 import * as EssentialsPlugin from '@tweakpane/plugin-essentials';
 import { sampleDir } from './core/cube.ts';
 import type { PlanetData } from './core/types.ts';
 import { DEFAULT_PARAMS, GEN_PRESETS, PARAM_SCHEMA, presetParams, type GenParams } from './gen/params.ts';
 import { generate } from './app/generate.ts';
-import { DEFAULT_ENV, PLANET_PRESETS, planetName, type EnvParams } from './app/presets.ts';
+import { DEFAULT_ENV, applyLookHints, archetypeLabel, planetName, MIN_ATMO_DENSITY, type EnvParams } from './app/presets.ts';
 import { download, exportPlanet } from './app/export.ts';
 import { loadTerrainTextures } from './render/terrainTextures.ts';
 import { createSharedUniforms, DEFAULT_LOOK, PlanetView, type LookParams } from './render/planetView.ts';
 import { Pipeline } from './render/pipeline.ts';
-import { createSky, type Sky } from './render/sky.ts';
+import { createSky } from './render/sky.ts';
 import { PlanetCameraController } from './render/controls.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
 
 const DEBUG_VIEWS: Record<string, number> = {
-  Lit: 0, Albedo: 1, Normals: 2, Height: 3, 'Splat layers': 4, Biomes: 5, Temperature: 6, Moisture: 7, 'Water flow': 8, 'Cube faces': 9, 'AO / rough': 10,
+  Lit: 0, Albedo: 1, Normals: 2, Height: 3, 'Splat layers': 4, 'Geologic map': 5, Temperature: 6, Volatiles: 7, Flow: 8, 'Cube faces': 9, 'AO / rough': 10,
 };
+
+const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
 
 async function main() {
   // ---- Renderer --------------------------------------------------------------------------------
-  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.autoClear = true;
   $('app').appendChild(renderer.domElement);
   if (!renderer.extensions.has('OES_texture_float_linear')) {
     console.warn('OES_texture_float_linear missing: heightmap filtering will be nearest on this GPU.');
@@ -36,15 +37,17 @@ async function main() {
   const camera = new THREE.PerspectiveCamera(DEFAULT_ENV.fov, window.innerWidth / window.innerHeight, 1, 1e5);
 
   // ---- State -----------------------------------------------------------------------------------
+  const archetypes = Object.keys(GEN_PRESETS);
   const state = {
-    preset: 'terran',
+    preset: archetypes[0] ?? 'default',
     autoRegen: true,
+    autoLook: true,
     meshSegments: 384,
     hideUi: false,
   };
-  let gen: GenParams = presetParams('terran', { seed: Math.floor(Math.random() * 100000), resolution: DEFAULT_PARAMS.resolution });
-  const look: LookParams = { ...DEFAULT_LOOK, ...PLANET_PRESETS.terran.look };
-  const env: EnvParams = structuredClone({ ...DEFAULT_ENV, ...PLANET_PRESETS.terran.env });
+  let gen: GenParams = presetParams(state.preset, { seed: Math.floor(Math.random() * 100000), resolution: DEFAULT_PARAMS.resolution });
+  const look: LookParams = { ...DEFAULT_LOOK };
+  const env: EnvParams = structuredClone(DEFAULT_ENV);
 
   // ---- Assets ----------------------------------------------------------------------------------
   const boot = $('boot');
@@ -52,7 +55,7 @@ async function main() {
   const shared = createSharedUniforms();
   const [layers, sky] = await Promise.all([
     loadTerrainTextures(renderer, '/textures/', undefined, (f) => (boot.textContent = `LOADING MATERIALS ${Math.round(f * 100)}%`)),
-    createSky(scene, shared) as Promise<Sky>,
+    createSky(scene, shared),
   ]);
 
   const view = new PlanetView(renderer, shared, layers);
@@ -68,12 +71,10 @@ async function main() {
   };
 
   // ---- Apply settings --------------------------------------------------------------------------
-  const sunDir = new THREE.Vector3();
   function applyEnv() {
     const az = THREE.MathUtils.degToRad(env.sunAzimuth);
     const el = THREE.MathUtils.degToRad(env.sunElevation);
-    sunDir.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
-    shared.uSunDir.value.copy(sunDir);
+    shared.uSunDir.value.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
     shared.uSunColor.value.set(env.sunColor).multiplyScalar(env.sunIntensity);
     renderer.toneMappingExposure = env.exposure;
     pipeline.bloom.strength = env.bloomStrength;
@@ -88,17 +89,16 @@ async function main() {
     shared.uMie.value = env.mie * 1e-3;
     shared.uMieH.value = env.mieH;
     shared.uMieG.value = env.mieG;
-    shared.uAtmoDensity.value = env.atmoDensity;
+    shared.uAtmoDensity.value = Math.max(MIN_ATMO_DENSITY, env.atmoDensity);
     pipeline.atmoUniforms.uSteps.value = env.atmoSteps;
-    // Sky ambient: the colour of the scattering, scaled by density and sun strength.
+    // Sky ambient: the colour of the scattered light (rayleigh + mie), scaled by density and sun.
     const r = env.rayleigh;
-    const m = Math.max(r.x, r.y, r.z, 1e-6);
+    const mieW = env.mie * 0.6;
+    const cr = r.x + mieW, cg = r.y + mieW, cb = r.z + mieW;
+    const m = Math.max(cr, cg, cb, 1e-6);
     const k = 0.11 * Math.min(env.atmoDensity, 1.5) * (env.sunIntensity / 6);
-    shared.uSkyAmbient.value.setRGB((r.x / m) * k, (r.y / m) * k, (r.z / m) * k);
+    shared.uSkyAmbient.value.setRGB((cr / m) * k, (cg / m) * k, (cb / m) * k);
     shared.uAmbient.value = env.ambient;
-    shared.uCloudShadow.value = env.cloudShadow;
-    shared.uCloudAlt.value = env.cloudAltitude;
-    shared.uCloudCover.value = env.cloudCover;
     camera.fov = env.fov;
     camera.updateProjectionMatrix();
     controller.autoRotate = env.autoRotate;
@@ -130,8 +130,10 @@ async function main() {
       if (ac.signal.aborted) return;
       view.setPlanet(planet);
       controller.radius = planet.radius / 1000;
+      if (state.autoLook && planet.info) applyLookHints(planet.info.look, env, look);
       applyEnv();
       applyLook();
+      pane.refresh();
       updateHud(planet, performance.now() - t0);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
@@ -149,41 +151,48 @@ async function main() {
   }
 
   function updateHud(p: PlanetData, ms: number) {
-    $('pname').textContent = planetName(gen.seed);
-    $('pclass').textContent = `${PLANET_PRESETS[state.preset]?.label ?? 'Custom'} world · seed ${gen.seed}`;
-    let water = 0;
-    const T = p.T;
-    for (let f = 0; f < 6; f++) for (let y = 1; y <= p.N; y += 2) for (let x = 1; x <= p.N; x += 2) if (p.height[(f * T + y) * T + x] < 0) water++;
-    const frac = water / (6 * Math.ceil(p.N / 2) ** 2);
-    const timings = p.timings ? Object.entries(p.timings).map(([k, v]) => `${k} ${Math.round(v)}`).join(' · ') : '';
-    $('pfacts').innerHTML =
-      `radius   <span>${(p.radius / 1000).toFixed(0)} km</span>\n` +
-      `surface  <span>${(gen.seaKind === 'none' ? 'no seas' : `${(frac * 100).toFixed(0)}% ${gen.seaKind}`)}</span>\n` +
-      `relief   <span>${(p.minHeight / 1000).toFixed(1)} … +${(p.maxHeight / 1000).toFixed(1)} km</span>\n` +
-      `faces    <span>6 × ${p.N}²</span>\n` +
-      `forged   <span>${(ms / 1000).toFixed(2)} s</span>${timings ? `\n<span style="color:var(--dim)">${timings}</span>` : ''}`;
+    const info = p.info;
+    $('pname').textContent = info?.name ?? planetName(gen.seed);
+    $('pclass').textContent = `${archetypeLabel(info?.archetype ?? state.preset)} world · seed ${gen.seed}`;
+    const b = info?.bulk;
+    const rows: [string, string][] = [];
+    if (b) {
+      rows.push(['radius', `${b.radiusKm.toFixed(0)} km · g ${b.gravity.toFixed(2)} m/s²`]);
+      rows.push(['mass', `${b.massEarth.toFixed(3)} M⊕ · ρ ${b.densityGcc.toFixed(2)} g/cm³`]);
+      rows.push(['core', `${(b.coreRadiusFrac * 100).toFixed(0)}% of radius · Fe ${(b.ironFrac * 100).toFixed(0)}%`]);
+      rows.push(['age', `${b.ageGyr.toFixed(2)} Gyr · ${b.tectonics} lid`]);
+      rows.push(['surface', `${b.surfaceTempK.toFixed(0)} K · ${b.seaKind === 'none' ? 'dry' : `${b.seaKind} seas`}`]);
+      const pbar = b.atmospherePressureBar;
+      rows.push(['air', `${b.atmosphereKind} · ${pbar < 0.01 ? pbar.toExponential(1) : pbar.toFixed(2)} bar`]);
+    } else {
+      rows.push(['radius', `${(p.radius / 1000).toFixed(0)} km`]);
+    }
+    rows.push(['relief', `${(p.minHeight / 1000).toFixed(1)} … +${(p.maxHeight / 1000).toFixed(1)} km`]);
+    rows.push(['faces', `6 × ${p.N}² · forged in ${(ms / 1000).toFixed(2)} s`]);
+    $('pfacts').innerHTML = rows.map(([k, v]) => `${k.padEnd(8)} <span>${esc(v)}</span>`).join('\n');
+
+    const hist = info?.history ?? [];
+    $('timeline').innerHTML = hist.length
+      ? `<div class="tl-title">Formation history <kbd>T</kbd></div>` +
+        hist
+          .map((h) => `<div class="tl-row"><span class="tl-t">${h.gyrAgo.toFixed(2)} Ga</span><span class="tl-s">${esc(h.stage)}</span><span class="tl-x">${esc(h.text)}</span></div>`)
+          .join('')
+      : '';
   }
 
-  // ---- Presets bar -----------------------------------------------------------------------------
+  // ---- Presets bar (archetypes) ----------------------------------------------------------------
   const presetBar = $('presets');
   function loadPreset(name: string, keepSeed = true) {
-    const p = PLANET_PRESETS[name];
-    if (!p) return;
+    if (!GEN_PRESETS[name]) return;
     state.preset = name;
-    gen = presetParams(p.gen, { seed: keepSeed ? gen.seed : Math.floor(Math.random() * 100000), resolution: gen.resolution });
-    Object.assign(look, DEFAULT_LOOK, p.look, { vegTint: p.vegTint ?? '#ffffff', debug: look.debug });
-    Object.assign(env, structuredClone({ ...DEFAULT_ENV, ...p.env, sunAzimuth: env.sunAzimuth, sunElevation: env.sunElevation, fov: env.fov }));
+    gen = presetParams(name, { seed: keepSeed ? gen.seed : Math.floor(Math.random() * 100000), resolution: gen.resolution });
     for (const b of presetBar.querySelectorAll('button')) b.classList.toggle('active', b.dataset.preset === name);
     rebuildGenPane();
-    pane.refresh();
-    applyEnv();
-    applyLook();
     regenerate();
   }
-  for (const [key, p] of Object.entries(PLANET_PRESETS)) {
-    if (!GEN_PRESETS[p.gen] && p.gen !== 'terran') continue;
+  for (const key of archetypes) {
     const b = document.createElement('button');
-    b.textContent = p.label;
+    b.textContent = archetypeLabel(key);
     b.dataset.preset = key;
     b.onclick = () => loadPreset(key);
     presetBar.appendChild(b);
@@ -198,6 +207,7 @@ async function main() {
 
   // Planet tab
   tPlanet.addBinding(state, 'autoRegen', { label: 'live regen' });
+  tPlanet.addBinding(state, 'autoLook', { label: 'auto look' });
   const actions = tPlanet.addBlade({ view: 'buttongrid', size: [3, 1], cells: (x: number) => ({ title: ['Forge', 'New seed', 'Export'][x] }) }) as unknown as {
     on(ev: 'click', cb: (e: { index: [number, number] }) => void): void;
   };
@@ -205,7 +215,10 @@ async function main() {
     const i = e.index[0];
     if (i === 0) regenerate();
     if (i === 1) newSeed();
-    if (i === 2 && view.data) download(exportPlanet(view.data, { params: gen, preset: state.preset, name: planetName(gen.seed) }), `${planetName(gen.seed).replace(/\s+/g, '_')}_${gen.seed}.planet`);
+    if (i === 2 && view.data) {
+      const name = view.data.info?.name ?? planetName(gen.seed);
+      download(exportPlanet(view.data, { params: gen, archetype: state.preset, name }), `${name.replace(/\s+/g, '_')}_${gen.seed}.planet`);
+    }
   });
   let genFolders: FolderApi[] = [];
   function rebuildGenPane() {
@@ -215,13 +228,13 @@ async function main() {
     for (const entry of PARAM_SCHEMA) {
       let folder = groups.get(entry.group);
       if (!folder) {
-        folder = (tPlanet as TabPageApi).addFolder({ title: entry.group, expanded: entry.group === 'General' || entry.group === 'Continents' });
+        folder = tPlanet.addFolder({ title: entry.group, expanded: groups.size < 2 });
         groups.set(entry.group, folder);
         genFolders.push(folder);
       }
       const opts: Record<string, unknown> = { label: entry.label };
       if (entry.options) opts.options = entry.options;
-      else Object.assign(opts, { min: entry.min, max: entry.max, step: entry.step });
+      else if (typeof (gen as unknown as Record<string, unknown>)[entry.key] === 'number') Object.assign(opts, { min: entry.min, max: entry.max, step: entry.step });
       folder.addBinding(gen as unknown as Record<string, unknown>, entry.key, opts).on('change', (ev) => {
         if (ev.last !== false) scheduleRegen();
       });
@@ -245,12 +258,10 @@ async function main() {
   fSurf.addBinding(look, 'heightBlend', { label: 'height blend', min: 0, max: 2, step: 0.01 });
   fSurf.addBinding(look, 'triSharp', { label: 'triplanar sharp', min: 1, max: 32, step: 0.5 });
   fSurf.addBinding(look, 'macroVar', { label: 'macro variation', min: 0, max: 1, step: 0.01 });
-  fSurf.addBinding(look, 'climateTint', { label: 'climate tint', min: 0, max: 1, step: 0.01 });
-  fSurf.addBinding(look, 'vegTint', { label: 'vegetation tint' });
-  fSurf.addBinding(look, 'wetness', { min: 0, max: 1, step: 0.01 });
-  fSurf.addBinding(look, 'rivers', { min: 0, max: 1, step: 0.01 });
-  fSurf.addBinding(look, 'cityLights', { label: 'city lights', min: 0, max: 5, step: 0.05 });
-  const fOcean = tLook.addFolder({ title: 'Ocean' });
+  fSurf.addBinding(look, 'tintStrength', { label: 'world tint', min: 0, max: 1.5, step: 0.01 });
+  fSurf.addBinding(look, 'wetness', { label: 'volatile wetness', min: 0, max: 1, step: 0.01 });
+  fSurf.addBinding(look, 'channels', { label: 'channel darkening', min: 0, max: 1, step: 0.01 });
+  const fOcean = tLook.addFolder({ title: 'Seas' });
   fOcean.addBinding(look, 'oceanMode', { label: 'mode', options: { water: 0, lava: 1, ice: 2, none: 3 } });
   fOcean.addBinding(look, 'deepColor', { label: 'deep' });
   fOcean.addBinding(look, 'shallowColor', { label: 'shallow' });
@@ -260,21 +271,13 @@ async function main() {
   fOcean.addBinding(look, 'foam', { min: 0, max: 2, step: 0.01 });
   fOcean.addBinding(look, 'lavaColor', { label: 'lava' });
   fOcean.addBinding(look, 'lavaGlow', { label: 'lava glow', min: 0, max: 60, step: 0.1 });
-  const fClouds = tLook.addFolder({ title: 'Clouds' });
-  fClouds.addBinding(look, 'cloudsVisible', { label: 'visible' });
-  fClouds.addBinding(env, 'cloudCover', { label: 'coverage', min: 0, max: 1, step: 0.01 });
-  fClouds.addBinding(look, 'cloudOpacity', { label: 'opacity', min: 0, max: 1, step: 0.01 });
-  fClouds.addBinding(look, 'cloudTint', { label: 'tint' });
-  fClouds.addBinding(env, 'cloudSpeed', { label: 'drift speed', min: 0, max: 20, step: 0.1 });
-  fClouds.addBinding(env, 'cloudShadow', { label: 'shadows', min: 0, max: 1, step: 0.01 });
-  fClouds.addBinding(env, 'cloudAltitude', { label: 'altitude (km)', min: 1, max: 40, step: 0.5 });
   const fAtmo = tLook.addFolder({ title: 'Atmosphere' });
-  fAtmo.addBinding(env, 'atmoDensity', { label: 'density', min: 0, max: 4, step: 0.01 });
-  fAtmo.addBinding(env, 'atmoHeight', { label: 'height (km)', min: 10, max: 300, step: 1 });
+  fAtmo.addBinding(env, 'atmoDensity', { label: 'density', min: MIN_ATMO_DENSITY, max: 6, step: 0.01 });
+  fAtmo.addBinding(env, 'atmoHeight', { label: 'height (km)', min: 10, max: 400, step: 1 });
   fAtmo.addBinding(env, 'rayleigh', { label: 'rayleigh β', x: { min: 0, max: 60 }, y: { min: 0, max: 60 }, z: { min: 0, max: 60 } });
-  fAtmo.addBinding(env, 'rayleighH', { label: 'rayleigh H', min: 1, max: 40, step: 0.1 });
-  fAtmo.addBinding(env, 'mie', { label: 'mie β', min: 0, max: 60, step: 0.1 });
-  fAtmo.addBinding(env, 'mieH', { label: 'mie H', min: 0.2, max: 20, step: 0.1 });
+  fAtmo.addBinding(env, 'rayleighH', { label: 'rayleigh H', min: 1, max: 60, step: 0.1 });
+  fAtmo.addBinding(env, 'mie', { label: 'mie β (haze)', min: 0, max: 80, step: 0.1 });
+  fAtmo.addBinding(env, 'mieH', { label: 'mie H', min: 0.2, max: 40, step: 0.1 });
   fAtmo.addBinding(env, 'mieG', { label: 'mie g', min: 0, max: 0.99, step: 0.01 });
   fAtmo.addBinding(env, 'atmoSteps', { label: 'march steps', min: 4, max: 64, step: 1 });
 
@@ -299,7 +302,9 @@ async function main() {
   // Debug tab
   tDebug.addBinding(look, 'debug', { label: 'view', options: DEBUG_VIEWS });
   tDebug.addBinding(look, 'wireframe');
-  tDebug.addBinding(state, 'meshSegments', { label: 'mesh / face', options: { '128': 128, '256': 256, '384': 384, '512': 512, '768': 768 } }).on('change', () => view.setMeshSegments(state.meshSegments));
+  tDebug
+    .addBinding(state, 'meshSegments', { label: 'mesh / face', options: { '128': 128, '256': 256, '384': 384, '512': 512, '768': 768 } })
+    .on('change', () => view.setMeshSegments(state.meshSegments));
   const camInfo = { text: '' };
   tDebug.addBinding(camInfo, 'text', { label: 'camera', readonly: true, multiline: true, rows: 3, interval: 250 });
   tDebug.addButton({ title: 'Screenshot (PNG)' }).on('click', () => {
@@ -308,7 +313,10 @@ async function main() {
   });
 
   // Renderer-side settings are cheap to apply, so any pane change re-applies them.
-  pane.on('change', () => { applyLook(); applyEnv(); });
+  pane.on('change', () => {
+    applyLook();
+    applyEnv();
+  });
 
   // ---- Keyboard --------------------------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
@@ -316,8 +324,9 @@ async function main() {
     if (e.key === 'r' || e.key === 'R') newSeed();
     if (e.key === 'h' || e.key === 'H') {
       state.hideUi = !state.hideUi;
-      for (const id of ['pane', 'hud', 'presets', 'help']) $(id).style.display = state.hideUi ? 'none' : '';
+      for (const id of ['pane', 'hud', 'presets', 'help', 'timeline']) $(id).style.display = state.hideUi ? 'none' : '';
     }
+    if (e.key === 't' || e.key === 'T') $('timeline').classList.toggle('collapsed');
     const dv = Object.values(DEBUG_VIEWS);
     if (/^[0-9]$/.test(e.key)) {
       look.debug = dv[Number(e.key)] ?? 0;
@@ -338,14 +347,13 @@ async function main() {
 
   // ---- Boot ------------------------------------------------------------------------------------
   rebuildGenPane();
-  loadPreset('terran');
-  controller.setView({ altitude: 2600, lat: 0.3, lon: 0.4 }, true);
+  loadPreset(state.preset);
+  controller.setView({ altitude: 3200, lat: 0.3, lon: 0.4 }, true);
   boot.classList.add('done');
 
   const timer = new THREE.Timer();
   let time = 0;
   let paneRefreshT = 0;
-  const cloudRot4 = new THREE.Matrix4();
   renderer.setAnimationLoop(() => {
     fps.begin();
     timer.update();
@@ -355,11 +363,12 @@ async function main() {
       env.sunAzimuth = ((env.sunAzimuth + env.dayCycle * dt + 540) % 360) - 180;
       applyEnv();
       paneRefreshT += dt;
-      if (paneRefreshT > 0.5) { paneRefreshT = 0; pane.refresh(); }
+      if (paneRefreshT > 0.5) {
+        paneRefreshT = 0;
+        pane.refresh();
+      }
     }
     shared.uTime.value = time;
-    cloudRot4.makeRotationY(time * env.cloudSpeed * 0.002);
-    shared.uCloudRot.value.setFromMatrix4(cloudRot4);
     controller.update(dt);
     sky.update(camera, renderer.getPixelRatio());
     camInfo.text = `alt ${controller.altitude.toFixed(1)} km\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
@@ -368,7 +377,9 @@ async function main() {
   });
 
   // Expose for debugging in the console.
-  Object.assign(window as unknown as Record<string, unknown>, { forge: { renderer, scene, camera, view, pipeline, controller, env, look, get gen() { return gen; }, regenerate, applyEnv, applyLook } });
+  Object.assign(window as unknown as Record<string, unknown>, {
+    forge: { renderer, scene, camera, view, pipeline, controller, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
+  });
 }
 
 main().catch((e) => {

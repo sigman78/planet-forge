@@ -3,147 +3,155 @@
   "layers": [
     {
       "index": 0,
-      "name": "beach_sand",
-      "source": "ambientCG/Ground080",
-      "url": "https://ambientcg.com/a/Ground080",
+      "name": "dust",
+      "source": "ambientCG/Ground099",
+      "url": "https://ambientcg.com/a/Ground099",
       "license": "CC0",
-      "albedo": "beach_sand_albedo.jpg",
-      "normal": "beach_sand_normal.jpg",
-      "orm": "beach_sand_orm.jpg",
-      "height": "beach_sand_height.jpg",
-      "tileMeters": 1.5,
+      "albedo": "dust_albedo.jpg",
+      "normal": "dust_normal.jpg",
+      "orm": "dust_orm.jpg",
+      "height": "dust_height.jpg",
+      "tileMeters": 2.0,
+      "saturationKept": 0.35,
       "meanAlbedo": [
-        0.4615,
-        0.3436,
-        0.1648
+        0.2132,
+        0.2026,
+        0.1856
       ],
-      "meanRoughness": 0.6568
+      "meanRoughness": 0.5932
     },
     {
       "index": 1,
-      "name": "grass",
-      "source": "ambientCG/Grass006",
-      "url": "https://ambientcg.com/a/Grass006",
+      "name": "highland",
+      "source": "ambientCG/Ground022",
+      "url": "https://ambientcg.com/a/Ground022",
       "license": "CC0",
-      "albedo": "grass_albedo.jpg",
-      "normal": "grass_normal.jpg",
-      "orm": "grass_orm.jpg",
-      "height": "grass_height.jpg",
+      "albedo": "highland_albedo.jpg",
+      "normal": "highland_normal.jpg",
+      "orm": "highland_orm.jpg",
+      "height": "highland_height.jpg",
       "tileMeters": 2.0,
+      "saturationKept": 0.4,
       "meanAlbedo": [
-        0.1166,
-        0.2199,
-        0.0228
+        0.3146,
+        0.3043,
+        0.2821
       ],
-      "meanRoughness": 0.7319
+      "meanRoughness": 0.6169
     },
     {
       "index": 2,
-      "name": "forest",
-      "source": "ambientCG/Moss004",
-      "url": "https://ambientcg.com/a/Moss004",
+      "name": "basalt",
+      "source": "ambientCG/Rock050",
+      "url": "https://ambientcg.com/a/Rock050",
       "license": "CC0",
-      "albedo": "forest_albedo.jpg",
-      "normal": "forest_normal.jpg",
-      "orm": "forest_orm.jpg",
-      "height": "forest_height.jpg",
-      "tileMeters": 1.5,
+      "albedo": "basalt_albedo.jpg",
+      "normal": "basalt_normal.jpg",
+      "orm": "basalt_orm.jpg",
+      "height": "basalt_height.jpg",
+      "tileMeters": 2.5,
+      "saturationKept": 0.4,
       "meanAlbedo": [
-        0.0356,
-        0.0837,
-        0.0101
+        0.0678,
+        0.0659,
+        0.0615
       ],
-      "meanRoughness": 0.6246
+      "meanRoughness": 0.5652
     },
     {
       "index": 3,
-      "name": "dry_grass",
-      "source": "ambientCG/Ground072",
-      "url": "https://ambientcg.com/a/Ground072",
-      "license": "CC0",
-      "albedo": "dry_grass_albedo.jpg",
-      "normal": "dry_grass_normal.jpg",
-      "orm": "dry_grass_orm.jpg",
-      "height": "dry_grass_height.jpg",
-      "tileMeters": 1.75,
-      "meanAlbedo": [
-        0.3038,
-        0.1886,
-        0.0952
-      ],
-      "meanRoughness": 0.5595
-    },
-    {
-      "index": 4,
-      "name": "desert",
+      "name": "sand",
       "source": "ambientCG/Ground097",
       "url": "https://ambientcg.com/a/Ground097",
       "license": "CC0",
-      "albedo": "desert_albedo.jpg",
-      "normal": "desert_normal.jpg",
-      "orm": "desert_orm.jpg",
-      "height": "desert_height.jpg",
+      "albedo": "sand_albedo.jpg",
+      "normal": "sand_normal.jpg",
+      "orm": "sand_orm.jpg",
+      "height": "sand_height.jpg",
       "tileMeters": 2.5,
+      "saturationKept": 0.45,
       "meanAlbedo": [
-        0.5401,
-        0.3554,
-        0.1855
+        0.3387,
+        0.2973,
+        0.2608
       ],
       "meanRoughness": 0.6524
     },
     {
-      "index": 5,
+      "index": 4,
       "name": "rock",
-      "source": "ambientCG/Rock060",
-      "url": "https://ambientcg.com/a/Rock060",
+      "source": "ambientCG/Rock022",
+      "url": "https://ambientcg.com/a/Rock022",
       "license": "CC0",
       "albedo": "rock_albedo.jpg",
       "normal": "rock_normal.jpg",
       "orm": "rock_orm.jpg",
       "height": "rock_height.jpg",
       "tileMeters": 4.0,
+      "saturationKept": 0.4,
       "meanAlbedo": [
-        0.1206,
-        0.1068,
-        0.0971
+        0.1245,
+        0.1214,
+        0.1133
       ],
-      "meanRoughness": 0.7559
+      "meanRoughness": 0.5444
     },
     {
-      "index": 6,
+      "index": 5,
       "name": "gravel",
-      "source": "ambientCG/Gravel024",
-      "url": "https://ambientcg.com/a/Gravel024",
+      "source": "ambientCG/Ground108",
+      "url": "https://ambientcg.com/a/Ground108",
       "license": "CC0",
       "albedo": "gravel_albedo.jpg",
       "normal": "gravel_normal.jpg",
       "orm": "gravel_orm.jpg",
       "height": "gravel_height.jpg",
       "tileMeters": 1.5,
+      "saturationKept": 0.4,
       "meanAlbedo": [
-        0.0757,
-        0.0735,
-        0.067
+        0.1633,
+        0.1525,
+        0.135
       ],
-      "meanRoughness": 0.4723
+      "meanRoughness": 0.5167
+    },
+    {
+      "index": 6,
+      "name": "ice",
+      "source": "ambientCG/Ice002",
+      "url": "https://ambientcg.com/a/Ice002",
+      "license": "CC0",
+      "albedo": "ice_albedo.jpg",
+      "normal": "ice_normal.jpg",
+      "orm": "ice_orm.jpg",
+      "height": "ice_height.jpg",
+      "tileMeters": 3.0,
+      "saturationKept": 0.35,
+      "meanAlbedo": [
+        0.6168,
+        0.6427,
+        0.5986
+      ],
+      "meanRoughness": 0.2086
     },
     {
       "index": 7,
-      "name": "snow",
-      "source": "ambientCG/Snow010A",
-      "url": "https://ambientcg.com/a/Snow010A",
+      "name": "salt",
+      "source": "ambientCG/Ground031",
+      "url": "https://ambientcg.com/a/Ground031",
       "license": "CC0",
-      "albedo": "snow_albedo.jpg",
-      "normal": "snow_normal.jpg",
-      "orm": "snow_orm.jpg",
-      "height": "snow_height.jpg",
-      "tileMeters": 3.0,
+      "albedo": "salt_albedo.jpg",
+      "normal": "salt_normal.jpg",
+      "orm": "salt_orm.jpg",
+      "height": "salt_height.jpg",
+      "tileMeters": 2.0,
+      "saturationKept": 0.4,
       "meanAlbedo": [
-        0.7341,
-        0.8611,
-        0.9776
+        0.5799,
+        0.556,
+        0.5147
       ],
-      "meanRoughness": 0.7114
+      "meanRoughness": 0.5491
     }
   ],
   "water": {

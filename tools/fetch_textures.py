@@ -27,16 +27,18 @@ from PIL import Image, ImageDraw
 # many sets, so it is set explicitly here).
 # --------------------------------------------------------------------------------------
 LAYERS = [
-    # index, name,         source,       id,           tileMeters
-    (0, "beach_sand", "ambientCG", "Ground080",   1.5),
-    (1, "grass",      "ambientCG", "Grass006",   2.0),
-    (2, "forest",     "ambientCG", "Moss004",    1.5),
-    (3, "dry_grass",  "ambientCG", "Ground072",  1.75),
-    (4, "desert",     "ambientCG", "Ground097",  2.5),
-    (5, "rock",       "ambientCG", "Rock060",    4.0),
-    (6, "gravel",     "ambientCG", "Gravel024",  1.5),
-    (7, "snow",       "ambientCG", "Snow010A",   3.0),
+    # index, name, source, id, tileMeters, desat (fraction of saturation kept), target mean linear albedo, contrast
+    (0, "dust",     "ambientCG", "Ground099",  2.0,  0.35, 0.20, 0.8),
+    (1, "highland", "ambientCG", "Ground022",  2.0,  0.40, 0.30, 1.0),
+    (2, "basalt",   "ambientCG", "Rock050",    2.5,  0.40, 0.065, 1.0),
+    (3, "sand",     "ambientCG", "Ground097",  2.5,  0.45, 0.30, 1.0),
+    (4, "rock",     "ambientCG", "Rock022",    4.0,  0.40, 0.12, 1.0),
+    (5, "gravel",   "ambientCG", "Ground108",  1.5,  0.40, 0.15, 1.0),
+    (6, "ice",      "ambientCG", "Ice002",     3.0,  0.35, 0.62, 0.9),
+    (7, "salt",     "ambientCG", "Ground031",  2.0,  0.40, 0.55, 1.0),
 ]
+# Neutral grey-beige hue target (linear RGB, chroma only); mean colour is pulled 60% of the way there.
+NEUTRAL = np.array([1.0, 0.95, 0.86], np.float32)
 RES = 1024
 PREFERRED_SIZES = ["2K-JPG", "1K-JPG"]
 UA = {"User-Agent": "planet-forge-asset-tool/0.1 (+offline texture packer; CC0 sources)"}
@@ -164,13 +166,38 @@ def renorm_normal(n: np.ndarray) -> np.ndarray:
 
 
 # ------------------------------------------------------------------------- layer packing
-def pack_layer(idx: int, name: str, source: str, asset_id: str, tile_m: float) -> dict:
+def neutralize(srgb: np.ndarray, keep: float, target: float, contrast: float) -> np.ndarray:
+    """Desaturate (keep fraction of saturation), pull mean hue toward grey-beige, set mean linear albedo."""
+    lin = srgb_to_lin(srgb)
+    Y = lin @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    lin = Y[..., None] + keep * (lin - Y[..., None])
+    m = lin.reshape(-1, 3).mean(0)
+    ratio = m / max(float(m @ np.array([0.2126, 0.7152, 0.0722], np.float32)), 1e-6)
+    want = NEUTRAL / float(NEUTRAL @ np.array([0.2126, 0.7152, 0.0722], np.float32))
+    lin = lin * ((want / np.maximum(ratio, 1e-3)) ** 0.6)
+    Y2 = lin @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    if contrast != 1.0:  # compress/expand luminance structure around the mean
+        k = (Y2.mean() + (Y2 - Y2.mean()) * contrast) / np.maximum(Y2, 1e-6)
+        lin = lin * k[..., None]
+    lo, hi = 1e-6, 100.0
+    for _ in range(40):  # bisect the gain so the clipped result lands on the target mean
+        g = (lo * hi) ** 0.5
+        if np.clip(lin * g, 0, 1).mean() < target:
+            lo = g
+        else:
+            hi = g
+    lin = np.clip(lin * g, 0, 1)
+    return np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055).astype(np.float32)
+
+
+def pack_layer(idx: int, name: str, source: str, asset_id: str, tile_m: float, keep: float, target: float, contrast: float) -> dict:
     print(f"[{idx}] {name}: {source}/{asset_id}")
     if source != "ambientCG":
         raise NotImplementedError(source)
     meta, xdir = fetch_acg(asset_id)
 
     color = resize(load(find_map(xdir, asset_id, "Color"), "RGB"))
+    color = neutralize(color, keep, target, contrast)
     save_jpg(color, OUT / f"{name}_albedo.jpg", 90)
 
     p = find_map(xdir, asset_id, "NormalGL")
@@ -209,7 +236,7 @@ def pack_layer(idx: int, name: str, source: str, asset_id: str, tile_m: float) -
         "url": meta.get("url") or f"https://ambientcg.com/a/{asset_id}", "license": "CC0",
         "albedo": f"{name}_albedo.jpg", "normal": f"{name}_normal.jpg",
         "orm": f"{name}_orm.jpg", "height": f"{name}_height.jpg",
-        "tileMeters": tile_m,
+        "tileMeters": tile_m, "saturationKept": keep,
         "meanAlbedo": [round(float(x), 4) for x in mean_lin],
         "meanRoughness": round(mean_r, 4),
     }
@@ -298,14 +325,19 @@ def main() -> int:
     RAW.mkdir(exist_ok=True)
 
     layers = []
-    for idx, name, src, aid, tm in LAYERS:
+    for idx, name, src, aid, tm, keep, tgt, con in LAYERS:
         if only and name not in only:
             continue
-        layers.append(pack_layer(idx, name, src, aid, tm))
+        layers.append(pack_layer(idx, name, src, aid, tm, keep, tgt, con))
     if only:
         print("partial run: manifest/preview not rewritten")
         return 0
 
+    keepset = {l[1] for l in LAYERS}
+    for f in OUT.iterdir():  # drop obsolete layer files
+        if f.is_file() and f.suffix == ".jpg" and f.name != "water_normal.jpg" and                 f.name.rsplit("_", 1)[0] not in keepset:
+            print("removing obsolete", f.name)
+            f.unlink()
     print("water normal (synthesized)")
     save_jpg(synth_water_normal(), OUT / "water_normal.jpg", 95)
     manifest = {

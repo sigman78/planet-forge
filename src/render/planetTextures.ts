@@ -4,12 +4,10 @@ import type { PlanetData } from '../core/types.ts';
 /** GPU-side copies of a PlanetData: 6-layer array textures (one layer per cube face). */
 export interface PlanetTextures {
   N: number;
-  cloudN: number;
   height: THREE.DataArrayTexture;
   splat0: THREE.DataArrayTexture;
   splat1: THREE.DataArrayTexture;
   climate: THREE.DataArrayTexture;
-  clouds: THREE.DataArrayTexture;
   dispose(): void;
 }
 
@@ -38,31 +36,22 @@ function arrayTex(
 export function createPlanetTextures(planet: PlanetData, renderer: THREE.WebGLRenderer): PlanetTextures {
   const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   const T = planet.T;
-  const cT = planet.cloudN + 2;
   // R32F: no mipmaps (not renderable everywhere); linear filtering needs OES_texture_float_linear.
   const height = arrayTex(planet.height, T, THREE.RedFormat, THREE.FloatType, false, 1);
   const splat0 = arrayTex(planet.splat0, T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
   const splat1 = arrayTex(planet.splat1, T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
   const climate = arrayTex(planet.climate, T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
-  const clouds = arrayTex(planet.clouds, cT, THREE.RedFormat, THREE.UnsignedByteType, true, aniso);
   return {
     N: planet.N,
-    cloudN: planet.cloudN,
     height,
     splat0,
     splat1,
     climate,
-    clouds,
     dispose() {
       height.dispose();
       splat0.dispose();
       splat1.dispose();
       climate.dispose();
-      clouds.dispose();
     },
   };
-}
-
-export function hasFloatLinear(renderer: THREE.WebGLRenderer): boolean {
-  return renderer.extensions.has('OES_texture_float_linear');
 }

@@ -27,12 +27,16 @@ If you need to change something here, say so in WORKLOG.md.
 |---|---|---|
 | `height` | Float32 6·T·T | elevation in **metres relative to sea level** (sea level is always 0) |
 | `splat0`, `splat1` | RGBA8 6·T·T·4 | weights for layers 0–3 and 4–7. All 8 channels sum to ~255 |
-| `climate` | RGBA8 | R temperature (0 = −40 °C … 255 = +40 °C), G moisture, B flow/wetness, A biome id |
-| `clouds` | R8 6·(cN+2)² | cloud coverage, same gutter rules |
-| `radius` | number | sea-level radius in metres (a "small planet" is about 1,000–3,000 km) |
+| `climate` | RGBA8 | R temperature (K/2, so 0..510 K), G volatile wetness, B flow accumulation, A geologic unit id |
+| `radius` | number | datum radius in metres (small rocky worlds, ~300–3,500 km) |
+| `info` | PlanetInfo | bulk physics, formation history, geologic units, render hints (see `types.ts`) |
 
-### Layer order (fixed, splat channel index)
-`0 beach_sand, 1 grass, 2 forest, 3 dry_grass, 4 desert, 5 rock, 6 gravel, 7 snow`
+There is no cloud layer. Every world has some atmosphere: the renderer clamps density to a small minimum, so even "airless" worlds get a faint limb haze.
+
+### Layer order (fixed, splat channel index). Geological, not Earth biomes
+`0 dust, 1 highland, 2 basalt, 3 sand, 4 rock, 5 gravel, 6 ice, 7 salt`
+
+Albedo textures are deliberately part-desaturated. Each world's colour comes from `info.look.layerTints` (linear multipliers per layer).
 
 ## 3. Generator API (`src/gen/`)
 
@@ -40,8 +44,10 @@ If you need to change something here, say so in WORKLOG.md.
   and `GEN_PRESETS` (named partial params).
 - `src/gen/index.ts` exports `generatePlanet(params, onProgress?): Promise<PlanetData>`. It runs in Web Workers in the browser.
 - The pure stage functions live in modules with no DOM or worker APIs, so `src/gen/cli.ts` can run them in Node.
-- Stages: noise per face (parallel) → erosion (whole cube, one worker, transferable buffers) → refill gutters →
-  climate + splat per face (parallel) → clouds.
+- Stages follow a formation history: bulk physics (mass, composition, heat, insolation, atmosphere) → magma ocean and
+  primordial crust → bombardment (giant basins, craters) → plumes and volcanism (rises, shields, flood basalts) →
+  tectonics (rifts, scarps, lineae) → volatiles (seas, erosion, ice caps) → aeolian and late features → geologic units →
+  splat. Erosion is a whole-cube pass in one worker; the other passes run per face in parallel.
 - Generation must be deterministic for a given seed and params.
 
 ## 4. Terrain texture pack (`public/textures/`, made by `tools/fetch_textures.py`)

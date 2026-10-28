@@ -5,11 +5,9 @@
 uniform sampler2DArray tSplat0;
 uniform sampler2DArray tSplat1;
 uniform sampler2DArray tClimate;
-uniform sampler2DArray tClouds;
 uniform sampler2DArray tAlbedo;   // sRGB albedo, a = height
 uniform sampler2DArray tNormal;   // GL normal
 uniform sampler2DArray tOrm;      // ao, roughness, metal
-uniform float uCloudN;
 uniform float uLayerScale[LAYERS];   // tiles per km
 uniform vec3  uLayerTint[LAYERS];
 uniform float uNormalStrength;
@@ -17,21 +15,14 @@ uniform float uMacroNormal;          // strength of the heightmap-derived normal
 uniform float uHeightBlend;          // contrast of height-based blending
 uniform float uTriSharp;
 uniform float uMacroVar;             // macro albedo variation
-uniform float uClimateTint;
 uniform float uWetness;
-uniform float uRiverAmount;
-uniform vec3  uRiverColor;
-uniform float uCityLights;
+uniform float uChannels;
 uniform float uAmbient;
 uniform vec3  uSkyAmbient;
-uniform float uCloudShadow;
-uniform float uCloudAlt;
-uniform float uCloudCover;
-uniform mat3  uCloudRot;
 uniform float uTime;
 uniform int   uDebug;
 uniform vec3  uLayerDebugColor[LAYERS];
-uniform vec3  uBiomeColors[24];
+uniform vec3  uUnitColors[32];
 
 varying vec3 vDir;
 varying vec3 vWorldPos;
@@ -48,7 +39,9 @@ vec3 heightRamp(float h) {
   return mix(c, vec3(1.0), smoothstep(0.7, 1.0, t));
 }
 
+// t = Kelvin / 510.
 vec3 tempRamp(float t) {
+  t = clamp((t * 510.0 - 40.0) / 420.0, 0.0, 1.0);
   return mix(mix(vec3(0.1, 0.2, 0.9), vec3(0.2, 0.9, 0.3), smoothstep(0.0, 0.5, t)), vec3(0.95, 0.2, 0.05), smoothstep(0.5, 1.0, t));
 }
 
@@ -70,13 +63,6 @@ vec3 brdf(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 L) {
   vec3 spec = D * G * F / (4.0 * NdL * NdV + 1e-4);
   vec3 kd = (1.0 - F) * (1.0 - metal);
   return (kd * albedo / PI + spec) * NdL;
-}
-
-float cloudCoverAt(vec3 dir) {
-  vec3 cd = uCloudRot * dir;
-  float c = texture(tClouds, cubeTexCoord(cd, uCloudN)).r;
-  float detail = fbm3(cd * 40.0 + vec3(0.0, uTime * 0.01, 0.0));
-  return smoothstep(0.5 - uCloudCover * 0.5, 0.75 - uCloudCover * 0.4, c + detail * 0.18);
 }
 
 void main() {
@@ -192,60 +178,34 @@ void main() {
   float rough = clamp(orm.g, 0.05, 1.0);
   float metal = orm.b;
 
-  // --- Macro variation & climate tint -------------------------------------------------------------
+  // --- Macro variation ------------------------------------------------------------------------------
   float macro = fbm3(n * 9.0) + 0.5 * fbm3(n * 37.0);
   albedo *= 1.0 + uMacroVar * macro;
   float temp = climate.r, moist = climate.g, flow = climate.b;
-  float veg = 0.0;
-  for (int k = 0; k < 4; k++) if (idx[k] >= 1 && idx[k] <= 3) veg += hb[k];
-  vec3 dryTint = vec3(1.25, 1.05, 0.55);
-  vec3 lushTint = vec3(0.8, 1.05, 0.75);
-  vec3 tint = mix(dryTint, lushTint, smoothstep(0.15, 0.8, moist));
-  albedo = mix(albedo, albedo * tint, veg * uClimateTint);
 
-  // --- Wetness & rivers (from erosion flow) -------------------------------------------------------
+  // --- Volatile wetness & erosion channels ------------------------------------------------------------
   float land = smoothstep(-5.0, 20.0, hM);
-  float wet = smoothstep(0.25, 0.7, flow) * uWetness * land;
-  albedo *= mix(1.0, 0.55, wet);
-  rough = mix(rough, 0.25, wet);
-  float river = smoothstep(0.62, 0.85, flow) * uRiverAmount * land * (1.0 - smoothstep(0.1, 0.35, 1.0 - temp));
-  albedo = mix(albedo, uRiverColor, river);
-  rough = mix(rough, 0.06, river);
-  N = normalize(mix(N, Nm, river));
+  float wet = moist * uWetness * land;
+  albedo *= mix(1.0, 0.65, wet);
+  rough = mix(rough, 0.4, wet * 0.5);
+  float chan = smoothstep(0.45, 0.85, flow) * uChannels * land;
+  albedo *= mix(1.0, 0.6, chan);   // darker sediment on channel floors
 
-  // --- Lighting ------------------------------------------------------------------------------------
+  // --- Lighting ----------------------------------------------------------------------------------------
   vec3 V = normalize(cameraPosition - vWorldPos);
   vec3 Lsun = uSunDir;
   vec3 sunCol = sunLightAt(vWorldPos);
-  // Cloud shadow: march from the surface toward the sun to the cloud shell.
-  float rc = uRadius + uCloudAlt;
-  float tCloud = raySphere(vWorldPos, Lsun, rc).y;
-  float cs = cloudCoverAt(normalize(vWorldPos + Lsun * max(tCloud, 0.0)));
-  float shadow = 1.0 - uCloudShadow * cs;
   // Keep normal-mapped light from leaking past the terminator.
   float horizon = smoothstep(-0.02, 0.06, dot(n, Lsun));
-
-  vec3 col = brdf(albedo, rough, metal, N, V, Lsun) * sunCol * shadow * horizon;
+  vec3 col = brdf(albedo, rough, metal, N, V, Lsun) * sunCol * horizon;
   float dayAmb = smoothstep(-0.25, 0.3, dot(n, Lsun));
   col += albedo * ao * (uSkyAmbient * dayAmb + vec3(uAmbient)) * (0.6 + 0.4 * dot(N, n));
-
-  // --- Night-side city lights ----------------------------------------------------------------------
-  if (uCityLights > 0.0) {
-    float night = smoothstep(0.02, -0.12, dot(n, Lsun));
-    float habitable = land * (1.0 - smoothstep(0.0, 1.0, max(0.0, hM - 1500.0) / 1500.0))
-                      * smoothstep(0.35, 0.5, temp) * (1.0 - smoothstep(0.82, 0.95, temp))
-                      * smoothstep(0.15, 0.35, moist);
-    float cities = smoothstep(0.35, 0.75, fbm3(n * 60.0) + 0.6 * snoise(n * 400.0));
-    float coast = 1.0 - smoothstep(0.0, 500.0, hM);
-    float lights = cities * habitable * (0.4 + coast);
-    col += night * lights * uCityLights * vec3(1.0, 0.62, 0.3);
-  }
 
   // --- Debug views ---------------------------------------------------------------------------------
   if (uDebug == 1) col = albedo;
   else if (uDebug == 2) col = N * 0.5 + 0.5;
   else if (uDebug == 3) col = heightRamp(hM) * (0.35 + 0.65 * max(dot(Nm, Lsun), 0.0));
-  else if (uDebug == 5) col = uBiomeColors[int(climate.a * 255.0 + 0.5) % 24] * (0.4 + 0.6 * max(dot(Nm, Lsun), 0.0));
+  else if (uDebug == 5) col = uUnitColors[int(climate.a * 255.0 + 0.5) % 32] * (0.4 + 0.6 * max(dot(Nm, Lsun), 0.0));
   else if (uDebug == 6) col = tempRamp(temp);
   else if (uDebug == 7) col = mix(vec3(0.8, 0.6, 0.3), vec3(0.1, 0.3, 0.9), moist);
   else if (uDebug == 8) col = vec3(flow * flow, flow, sqrt(flow));

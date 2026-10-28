@@ -29,8 +29,6 @@ export function makeStubPlanet(N = 256): PlanetData {
   const splat0 = new Uint8Array(6 * T * T * 4);
   const splat1 = new Uint8Array(6 * T * T * 4);
   const climate = new Uint8Array(6 * T * T * 4);
-  const cN = 128, cT = cN + 2;
-  const clouds = new Uint8Array(6 * cT * cT);
   let mn = 1e9, mx = -1e9;
   for (let f = 0; f < 6; f++)
     for (let y = 0; y < T; y++)
@@ -55,11 +53,5 @@ export function makeStubPlanet(N = 256): PlanetData {
         climate[i * 4 + 1] = 128;
         climate[i * 4 + 2] = 0;
       }
-  for (let f = 0; f < 6; f++)
-    for (let y = 0; y < cT; y++)
-      for (let x = 0; x < cT; x++) {
-        const d = faceToDir(f, texelToS(x, cN), texelToS(y, cN));
-        clouds[(f * cT + y) * cT + x] = Math.max(0, Math.min(255, (fbm(d[0] * 4, d[1] * 4, d[2] * 4 + 9, 6) + 0.5) * 255));
-      }
-  return { N, T, radius: 800000, height, minHeight: mn, maxHeight: mx, splat0, splat1, climate, cloudN: cN, clouds };
+  return { N, T, radius: 800000, height, minHeight: mn, maxHeight: mx, splat0, splat1, climate };
 }
