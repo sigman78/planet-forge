@@ -37,15 +37,17 @@ void main() {
   int steps = uSteps;
   float dt = (t1 - t0) / float(steps);
   float jitter = 0.5 + (ign(gl_FragCoord.xy + uFrame * 5.588238) - 0.5) * uJitter;
-  vec2 odView = vec2(0.0);
+  vec3 odView = vec3(0.0);
   vec3 sumR = vec3(0.0);
   vec3 sumM = vec3(0.0);
+  vec3 sumH = vec3(0.0);
   for (int i = 0; i < 64; i++) {
     if (i >= steps) break;
     vec3 p = ro + rd * (t0 + (float(i) + jitter) * dt);
-    vec2 dens = atmoDensityAt(p) * dt;
+    vec3 dens = atmoDensityAt(p) * dt;
+    dens.z = 0.0;   // haze is integrated separately below (thin layer, needs its own steps)
     odView += dens;
-    vec2 odSun = opticalDepthToSun(p, 6);
+    vec3 odSun = opticalDepthToSun(p, 6);
     vec3 tr = transmittanceFromOD(odView + odSun);
     sumR += dens.x * tr;
     sumM += dens.y * tr;
@@ -56,5 +58,31 @@ void main() {
   float phaseM = 3.0 / (8.0 * PI) * ((1.0 - g * g) * (1.0 + mu * mu)) / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
   vec3 inscatter = (sumR * uRayleigh * phaseR + sumM * uMie * phaseM) * uSunColor * uSunIntensity;
   vec3 viewTr = transmittanceFromOD(odView);
-  gl_FragColor = vec4(col * viewTr + inscatter, 1.0);
+
+  // Ground haze: march only the part of the ray inside the haze layer.
+  float hazeOD = 0.0;
+  if (uHaze > 0.0) {
+    vec2 hh = raySphere(ro, rd, min(uPlanetRadius + uHazeH * 6.0, uAtmoRadius));
+    float a0 = max(hh.x, 0.0), a1 = min(hh.y, min(sceneT, ground.x > 0.0 && ground.x < ground.y ? ground.x : 1e9));
+    if (a1 > a0) {
+      float hdt = (a1 - a0) / 12.0;
+      for (int i = 0; i < 12; i++) {
+        vec3 p = ro + rd * (a0 + (float(i) + 0.5) * hdt);
+        float r = length(p);
+        float dz = exp(-max(r - uPlanetRadius, 0.0) / uHazeH) * hdt;
+        hazeOD += dz;
+        // Sun through the haze: planet shadow + airmass approximation instead of a nested march.
+        vec3 up = p / r;
+        float cz = dot(up, uSunDir);
+        vec2 occ = raySphere(p, uSunDir, uPlanetRadius * 0.999);
+        float lit = (occ.x > 0.0 && occ.x < occ.y) ? 0.0 : 1.0;
+        float odSunH = uHaze * uHazeH * exp(-max(r - uPlanetRadius, 0.0) / uHazeH) / max(cz + 0.15, 0.08);
+        sumH += dz * exp(-uHaze * hazeOD - odSunH) * (lit * smoothstep(-0.12, 0.05, cz));
+      }
+    }
+  }
+  float gh = uHazeG;
+  float phaseH = (1.0 - gh * gh) / (4.0 * PI * pow(1.0 + gh * gh - 2.0 * gh * mu, 1.5));
+  inscatter += sumH * uHaze * uHazeColor * (phaseH + 0.02) * uSunColor * uSunIntensity;
+  gl_FragColor = vec4(col * viewTr * exp(-uHaze * hazeOD) + inscatter, 1.0);
 }

@@ -91,6 +91,9 @@ async function main() {
     shared.uMieG.value = env.mieG;
     shared.uAtmoDensity.value = Math.max(MIN_ATMO_DENSITY, env.atmoDensity);
     pipeline.atmoUniforms.uSteps.value = env.atmoSteps;
+    shared.uHaze.value = env.haze * 1e-3;
+    shared.uHazeH.value = env.hazeH;
+    shared.uHazeColor.value.set(env.hazeColor);
     // Sky ambient: the colour of the scattered light (rayleigh + mie), scaled by density and sun.
     const r = env.rayleigh;
     const mieW = env.mie * 0.6;
@@ -98,6 +101,12 @@ async function main() {
     const m = Math.max(cr, cg, cb, 1e-6);
     const k = 0.11 * Math.min(env.atmoDensity, 1.5) * (env.sunIntensity / 6);
     shared.uSkyAmbient.value.setRGB((cr / m) * k, (cg / m) * k, (cb / m) * k);
+    // Ground haze adds a dusty skylight of its own.
+    const hk = Math.min(env.haze / 30, 1) * 0.06 * (env.sunIntensity / 6);
+    const hc = new THREE.Color(env.hazeColor);
+    shared.uSkyAmbient.value.r += hc.r * hk;
+    shared.uSkyAmbient.value.g += hc.g * hk;
+    shared.uSkyAmbient.value.b += hc.b * hk;
     shared.uAmbient.value = env.ambient;
     camera.fov = env.fov;
     camera.updateProjectionMatrix();
@@ -138,7 +147,7 @@ async function main() {
         controller.setView({ altitude: R * 2.6 }, !framed);
         framed = true;
       }
-      if (state.autoLook && planet.info) applyLookHints(planet.info.look, env, look);
+      if (state.autoLook && planet.info) applyLookHints(planet.info.look, env, look, planet.info.bulk);
       applyEnv();
       applyLook();
       pane.refresh();
@@ -290,6 +299,9 @@ async function main() {
   fAtmo.addBinding(env, 'mie', { label: 'mie β (haze)', min: 0, max: 80, step: 0.1 });
   fAtmo.addBinding(env, 'mieH', { label: 'mie H', min: 0.2, max: 40, step: 0.1 });
   fAtmo.addBinding(env, 'mieG', { label: 'mie g', min: 0, max: 0.99, step: 0.01 });
+  fAtmo.addBinding(env, 'haze', { label: 'ground haze', min: 0, max: 80, step: 0.1 });
+  fAtmo.addBinding(env, 'hazeH', { label: 'haze height (km)', min: 0.3, max: 20, step: 0.1 });
+  fAtmo.addBinding(env, 'hazeColor', { label: 'haze colour' });
   fAtmo.addBinding(env, 'atmoSteps', { label: 'march steps', min: 4, max: 64, step: 1 });
 
   // Light tab

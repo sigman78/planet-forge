@@ -1,4 +1,4 @@
-import type { LookHints, SeaKind } from '../core/types.ts';
+import type { LookHints, PlanetBulk, SeaKind } from '../core/types.ts';
 import type { LookParams } from '../render/planetView.ts';
 
 /** Environment / lighting / post settings (renderer side, no regeneration needed). */
@@ -22,6 +22,9 @@ export interface EnvParams {
   mieH: number;
   mieG: number;
   atmoSteps: number;
+  haze: number; // low-lying haze extinction, 1e-3 / km at the surface
+  hazeH: number; // km
+  hazeColor: string;
   ambient: number;
   fov: number;
   autoRotate: number;
@@ -48,6 +51,9 @@ export const DEFAULT_ENV: EnvParams = {
   mieH: 1.6,
   mieG: 0.78,
   atmoSteps: 16,
+  haze: 4,
+  hazeH: 3,
+  hazeColor: '#c9b49a',
   ambient: 0.004,
   fov: 45,
   autoRotate: 0,
@@ -60,7 +66,7 @@ export const MIN_ATMO_DENSITY = 0.04;
 const SEA_MODE: Record<SeaKind, number> = { water: 0, lava: 1, ice: 2, none: 3 };
 
 /** Copy the generator's render hints into the viewer settings. */
-export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams) {
+export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams, bulk?: PlanetBulk) {
   env.atmoDensity = Math.max(MIN_ATMO_DENSITY, h.atmoDensity);
   env.atmoHeight = h.atmoHeightKm;
   env.rayleigh = { x: h.rayleigh[0], y: h.rayleigh[1], z: h.rayleigh[2] };
@@ -69,6 +75,19 @@ export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams) {
   // fades out smoothly instead of ending in a hard-edged shell.
   env.rayleighH = Math.min(h.rayleighH, h.atmoHeightKm / 5);
   env.mieH = Math.min(h.mieH, h.atmoHeightKm / 7);
+  // Ground haze from surface pressure: a faint hint on airless bodies (exospheric dust), a real
+  // dusty horizon on worlds with a thin atmosphere. Scale height grows on low-gravity bodies.
+  if (bulk) {
+    const p = Math.max(bulk.atmospherePressureBar, 1e-16);
+    const k = Math.min(Math.max((Math.log10(p) + 7) / 5, 0), 1); // 1e-7 bar -> 0, 1e-2 bar -> 1
+    env.haze = 0.6 + 34 * k * k;
+    env.hazeH = Math.min(Math.max(bulk.radiusKm * 0.008, 1.5), 6) * (1 + k);
+    // Tint from the dust layer (raw texture is greyish; the world tint carries the colour).
+    const t = h.layerTints[0] ?? [1, 1, 1];
+    const m = Math.max(t[0], t[1], t[2], 1e-3);
+    const c = (v: number) => Math.round(255 * Math.min(1, 0.55 + 0.4 * (v / m)));
+    env.hazeColor = `#${[t[0], t[1], t[2]].map((v) => c(v).toString(16).padStart(2, '0')).join('')}`;
+  }
   look.oceanMode = SEA_MODE[h.seaKind] ?? 3;
   look.deepColor = h.seaDeepColor;
   look.shallowColor = h.seaShallowColor;
