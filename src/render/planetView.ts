@@ -224,6 +224,7 @@ export class PlanetView {
         uMacroVar: u(0.25),
         uAntiTile: u(1),
         uHexFreq: u(1),
+        uFarWindow: u(0.35),
         uFineDetail: u(1),
         uLayerStyle: u(LAYER_STYLE.map((v) => new THREE.Vector4(...v))),
         uFinePits: u(1),

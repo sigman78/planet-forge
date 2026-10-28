@@ -176,6 +176,7 @@ vec3 triNormal(Hex h, vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec2 W) {
 // also carries, then fine octaves below the mesh in the style of the local materials. Analytic gradients
 // stay smooth down to ~3 px per wavelength (screen-derivative bumps go blocky below ~12 px), so the
 // detail reaches much farther out before it fades.
+uniform float uFarWindow;       // height-blend window far away (wider = softer unit edges)
 float gDetailFootprint = 0.0;   // geometric mean of the screen footprint axes (see main)
 
 vec3 detailGrad(vec3 d, float h, vec4 fineStyle) {
@@ -337,13 +338,14 @@ void main() {
     hb[k] = wt[k] < 0.004 ? -1e3 : wt[k] + ah[k].a * uHeightBlend;
     mx = max(mx, hb[k]);
   }
-  float bsum = 0.0;
-  for (int k = 0; k < NLAY; k++) { hb[k] = max(hb[k] - mx + 0.25, 0.0) * step(0.004, wt[k]); bsum += hb[k]; }
-  // Height blending only means something while the texture relief is resolved. Once a pixel covers a good part
-  // of a tile, the mips flatten the heights and the window just sharpens splat edges into hard spots, so fall
-  // back to the plain splat weights.
+  // Once a pixel covers a good part of a tile the mips flatten the texture heights, and a narrow window would just
+  // sharpen splat edges into hard spots. Widen it with distance: edges soften, but the dominant unit still wins,
+  // so dark lava flows stay dark instead of averaging to grey with the plains around them.
   float farBlend = smoothstep(0.08, 0.5, gFootprint * uHexFreq / 0.55);
-  for (int k = 0; k < NLAY; k++) hb[k] = mix(hb[k] / max(bsum, 1e-4), wt[k], farBlend);
+  float win = mix(0.25, uFarWindow, farBlend);
+  float bsum = 0.0;
+  for (int k = 0; k < NLAY; k++) { hb[k] = max(hb[k] - mx + win, 0.0) * step(0.004, wt[k]); bsum += hb[k]; }
+  for (int k = 0; k < NLAY; k++) hb[k] /= max(bsum, 1e-4);
 
   vec3 albedo = vec3(0.0);
   vec3 orm = vec3(0.0);
