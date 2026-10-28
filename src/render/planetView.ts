@@ -51,6 +51,7 @@ export interface LookParams {
   seaFloorScale: number;
   detailAmp: number; // metres of procedural detail relief
   detailScale: number; // km
+  fineDetail: number; // strength of sub-heightmap bump relief (fragment only)
   textureScale: number; // world-scale multiplier for texture tiles (stylised: >1 = bigger tiles)
   normalStrength: number;
   macroNormal: number;
@@ -79,6 +80,7 @@ export const DEFAULT_LOOK: LookParams = {
   seaFloorScale: 0.8,
   detailAmp: 350,
   detailScale: 6,
+  fineDetail: 1,
   textureScale: 250,
   normalStrength: 0.7,
   macroNormal: 1,
@@ -156,6 +158,7 @@ export class PlanetView {
         uMacroVar: u(0.25),
         uAntiTile: u(1),
         uHexFreq: u(1),
+        uFineDetail: u(1),
         uWetness: u(0.5),
         uChannels: u(0.6),
         uDebug: u(0),
@@ -263,6 +266,7 @@ export class PlanetView {
     U.uSeaFloorScale.value = look.seaFloorScale;
     U.uDetailAmp.value = look.detailAmp;
     U.uDetailScale.value = look.detailScale;
+    U.uFineDetail.value = look.fineDetail;
     // Tiles per km: the texture's real tile size scaled up by textureScale (stylised macro tiling).
     const scales = this.layers.layers.map((l) => 1000 / (l.tileMeters * look.textureScale));
     U.uLayerScale.value = scales;

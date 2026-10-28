@@ -9,6 +9,7 @@ uniform sampler2DArray tAlbedo;   // sRGB albedo, a = height
 uniform sampler2DArray tNormal;   // GL normal
 uniform sampler2DArray tOrm;      // ao, roughness, metal
 uniform float uLayerScale[LAYERS];   // tiles per km
+uniform float uFineDetail;           // strength of the sub-heightmap bump octaves (0 = off)
 uniform vec3  uLayerTint[LAYERS];
 uniform float uNormalStrength;
 uniform float uMacroNormal;          // strength of the heightmap-derived normal
@@ -153,6 +154,29 @@ vec3 triNormal(Hex h, vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec2 W) {
   return a * W.x + b * W.y;
 }
 
+// Fine relief below the baked heightmap's resolution: continues detailM's spectrum (octaves 3..7,
+// ~1 km down to tens of metres at the default scale). Applied as a bump through screen-space
+// derivatives (one noise eval per octave, no finite differences). Each octave fades out before it
+// gets smaller than a few pixels, so it costs nothing visible from orbit and never shimmers.
+float fineDetailM(vec3 d, float h) {
+  if (uFineDetail <= 0.0) return 0.0;
+  float mask = h < 0.0 ? 0.3 : mix(0.5, 1.4, smoothstep(300.0, 5000.0, h));
+  float sum = 0.0;
+  float s = uDetailScale / 9.2;            // continues after detailM's last octave (scale / 4.37)
+  float a = 0.4;                           // relative to uDetailAmp
+  for (int i = 0; i < 4; i++) {
+    // Bump octaves need ~12+ px per wavelength to read as shape rather than grain.
+    float f = 1.0 - smoothstep(0.035, 0.09, gFootprint / s);
+    if (f <= 0.0) break;
+    vec3 q = d * (uRadius / s) + float(i) * 17.3;
+    float r = 1.0 - abs(snoise(q));        // ridged: rocky crests and gullies rather than blobs
+    sum += a * f * (r * r - 0.45);
+    s /= 2.17;
+    a *= 0.42;                             // steep falloff: shape first, grain last
+  }
+  return sum * uDetailAmp * mask * uFineDetail;
+}
+
 void main() {
   vec3 n = normalize(vDir);                     // sphere normal (object == world, planet is static)
   // Screen-space derivatives, taken here in uniform control flow.
@@ -171,6 +195,16 @@ void main() {
   vec3 dy = surfPos(normalize(n + t2 * e)) - surfPos(normalize(n - t2 * e));
   vec3 Nm = normalize(cross(dx, dy));
   Nm = normalize(mix(n, Nm, uMacroNormal));
+
+  // Fine relief bump (Mikkelsen's surface-gradient bump mapping with screen derivatives).
+  float fineKm = fineDetailM(n, bakedHeightM(n)) * uHeightScale;
+  {
+    float dhx = dFdx(fineKm), dhy = dFdy(fineKm);
+    vec3 r1 = cross(dpdy, Nm), r2 = cross(Nm, dpdx);
+    float det = dot(dpdx, r1);
+    vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
+    Nm = normalize(abs(det) * Nm - grad);
+  }
 
   vec3 tc = cubeTexCoord(n, uN);
   // Mip level from the continuous direction, not from tc: tc jumps at cube-face edges, and implicit
