@@ -30,6 +30,9 @@ Each world starts as a formation history, not as noise:
 There are nine archetypes: Rust, Cinder, Grey moon, Ice shell, Old ice, Sulfur, Basalt, Cryovolcanic and Wild.
 - **Drama** scales how wild the relief gets.
 - **Distortion** turns small bodies into triaxial or lumpy "potatoes". The figure is clamped at ±24.5% of the radius.
+- Giant basins roll their own impact story: oblique or round, central peak, peak ring, flat or bowl floor, 0–4 broken
+  rings and age wear (`basinOblique`, `basinRings`, `basinAge`).
+- The planner names the big features (basins, volcanoes, canyons, rises, chaos, rayed craters, polar caps).
 
 The generator runs in a Web Worker pool in the browser. It also runs in Node from the CLI.
 
@@ -45,6 +48,8 @@ The generator runs in a Web Worker pool in the browser. It also runs in Node fro
 - **Light:** heightmap ray-marched cast shadows, cavity AO baked on the CPU and planetshine fill from the parent giant,
   so the night side is not pitch black.
 - **Atmosphere:** a Rayleigh/Mie post pass plus a low-altitude haze march.
+  - **HQ volumetrics** (on by default): a sun shadow-height map shades the dust and haze behind terrain, so peaks and
+    canyon walls throw long shadow shafts at low sun. "Dust shafts" stretches them.
   - The air follows a smoothed map of the body's figure, so lumpy worlds keep their haze on the ground, not in space.
   - Density and haze scale with surface pressure: a faint hint on airless moons, dusty horizons on thin-air worlds.
 - **Surfaces:** glowing lava lakes and calderas, plus ice-shell and lava "sea" modes.
@@ -53,6 +58,10 @@ The generator runs in a Web Worker pool in the browser. It also runs in Node fro
 - While a world forges, a faceted wireframe hologram blinks and fills in with progress. There is no loading screen.
 - Bulk facts decode into the HUD one by one, like scan results.
 - The formation history plays as quiet captions along the bottom of the screen.
+- Named landmark labels sit on the globe from orbit and fade out as you descend.
+- **Tour** flies over the main landmarks, along the terminator and low across a lit feature, then climbs to the night
+  side for a crescent shot with the star rising past the limb. Any drag or scroll stops it.
+- Switching worlds pulls the camera back to the opening view while the hologram plays.
 - Generated worlds are cached in IndexedDB (6 most recent), keyed by the parameters and a hash of the generator source.
   A cached world comes back in about 0.1 s instead of about 3 s.
 
@@ -60,17 +69,20 @@ The generator runs in a Web Worker pool in the browser. It also runs in Node fro
 
 | Input | Action |
 |---|---|
-| Drag | Orbit |
+| Drag | Orbit (throw it and it drifts) |
 | Wheel | Zoom (exponential, terrain-aware) |
 | Right-drag / Shift-drag | Heading and pitch; the view tilts toward the horizon as you descend |
 | `R` | New seed |
 | `H` | Hide UI (for screenshots) |
 | `T` | Toggle captions |
+| `L` | Toggle landmark labels |
+| `P` | Start or stop the tour |
 | `0`–`9` | Debug views: lit, albedo, normals, height, splat, geologic map, temperature, volatiles, flow, cube faces |
 
 - The archetype buttons along the top pick an archetype.
 - The side panel exposes every generator parameter (with live regeneration), plus look, landform detail style,
-  atmosphere, light, post, cache and debug settings.
+  atmosphere, light, post, cache and debug settings. Parameters left on AUTO show the value the generator picked,
+  dimmed, until you move them.
 - **Export** writes a `.planet` file for engine import tests: a JSON header plus raw face arrays
   (see `src/app/export.ts`).
 

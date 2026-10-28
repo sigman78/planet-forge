@@ -91,3 +91,42 @@ Newest entries at the bottom. Times are local.
   - Cloudflare assets-only Worker at planet-forge.ioupg.com, through the `cf` CLI. `DEPLOY_TARGET=cloudflare`
     switches the Vite base to `/` and enables `@cloudflare/vite-plugin`.
   - The README was rewritten with demo links and screenshots.
+
+## 2026-10-28 afternoon — touch-ups (branch `touchups`, 10 user items, plan in `docs/plan-touchups.md`)
+- **Camera:** pan speed comes from the ground distance at screen centre (about 10x faster low down), with throw
+  inertia (τ 0.7 s). `flyTo` (ease in-out, log altitude) pulls the view back to the opening framing while a new world
+  forges.
+- **Materials:**
+  - A layer enters the top 3 at zero weight (no pops).
+  - Splat edges are ragged (fbm) and blurred 3x3 in the generator, plus a light albedo-harmony pull.
+  - Detail octaves get a long-axis Nyquist fade and per-hex-cell brightness jitter.
+  - Far away the height-blend window widens (0.25 → 0.35) instead of falling back to plain weights. The first version
+    used plain weights and turned Sulfur's dark flows grey from orbit; caught against master in a side-by-side worktree.
+- **Relief normal** comes from a baked, mipmapped RGBA16F height-gradient texture (no per-texel facets, no orbit
+  aliasing). Rift walls are never narrower than 1.6 texels.
+- **AUTO params** show the value the generator resolved, dimmed. Tweakpane snaps on refresh, so a change within half a
+  step counts as a resync, not a pin.
+- **Basins** (seeds changed, user OK'd): oblique/elongated with butterfly ejecta, scalloped rims, peak / peak-ring /
+  flat / bowl floors, 0–4 broken rings, age wear. Antipodal chaos rolls at 60%. New `basinOblique`, `basinRings` and
+  `basinAge` knobs.
+- **Landmarks:** the planner names up to 16 POIs (basins, volcanoes, canyons, rises, chaos, rayed craters, caps).
+  Labels fade by zoom and limb and are decluttered by rank. `L` toggles them.
+- **HQ volumetrics:**
+  - A 3x2 face atlas (512² per face, RG16F) stores the height where sunlight starts and the shadow's lift above the
+    ground. It is rebuilt only when the sun or the relief changes: 9 rebuilds a second under the day cycle with no fps
+    change.
+  - The haze march (48 steps in HQ) and the low Mie dust test against it.
+  - "Dust shafts" (default 3) stretches the shadow volumes upward. Physical shadows on gentle worlds are only a few km
+    tall and barely show; stretched, a canyon rim throws a long dark wedge at low sun. Lit ground keeps zero lift, so
+    shafts still start where the ground shadows do.
+  - Cost on a 1080 Ti at 1800x1012: low altitude 66 → 56 fps, none from orbit. On by default.
+  - Debug aid: `forge.state.hqDebug` = 1 shows the shadow-map verdict on the ground (matches the terrain's own
+    shadows), 2 shows the haze glow only.
+- **Tour** (button / `P`):
+  - Orbit pass over the lit landmarks, with captions on arrival.
+  - Terminator view, aimed from the horizon dip.
+  - Cross-lit low flyby. Straight down-sun went black behind volcano flanks.
+  - Climb over the night side to a crescent shot: dot(c,S) = -cos(asin(R/D) + ε), with ε drifting from -5° to +0.15°
+    so the star rises past the limb.
+  - Any input cancels it; auto-rotate and labels are restored afterwards.
+- README screenshots retaken side-lit (65° phase). Basalt is now shot from the lava-sea side.
