@@ -10,16 +10,26 @@ import type { FaceCoord, Vec3 } from '../core/cube.ts';
 import { buildPadMap, texelAreaWeights } from './heightfield.ts';
 import type { PadMap } from './heightfield.ts';
 import { Rng } from './noise.ts';
-import type { GenParams } from './params.ts';
 
 /** Erosion height unit: metres -> units where 1 = UNIT_PER_SLOPE⁻¹ of a 45° slope over one texel. */
 const UNIT_PER_SLOPE = 0.05;
 
-export interface ErosionResult {
-  /** Upstream contributing area per texel (in texels), 6·T·T, gutters refilled. */
-  flow: Float32Array;
-  /** Number of droplets simulated. */
+/** Erosion settings (derived from GenParams + the world plan by the pipeline). */
+export interface ErosionSettings {
+  seed: number;
+  radius: number;
+  /** Droplets per land texel (0 = no hydraulic erosion). */
   droplets: number;
+  erosionRate: number;
+  depositionRate: number;
+  inertia: number;
+  evaporation: number;
+  capacity: number;
+  brushRadius: number;
+  thermalIterations: number;
+  talusAngle: number;
+  /** Droplets that reach this level stop and drop their load (-Infinity = no sea). */
+  seaLevel: number;
 }
 
 /** Mean texel edge length in metres. */
@@ -29,28 +39,33 @@ export function texelMeters(N: number, radius: number): number {
 
 /** Hydraulic + thermal erosion in place (height in metres, sea level 0). Gutters are refilled at the end. */
 export function erodeCube(
-  height: Float32Array, N: number, p: GenParams, onProgress?: (frac: number) => void, padMap?: PadMap,
+  height: Float32Array, N: number, p: ErosionSettings, onProgress?: (frac: number) => void, padMap?: PadMap,
 ): number {
   const pm = padMap ?? buildPadMap(N, 4);
   let droplets = 0;
-  if (p.erosionDroplets > 0) droplets = hydraulicErosion(height, pm, p, onProgress);
+  if (p.droplets > 0) droplets = hydraulicErosion(height, pm, p, onProgress);
   if (p.thermalIterations > 0) thermalErosion(height, pm, p);
   refillGutters(height, N);
   return droplets;
 }
 
-function hydraulicErosion(H: Float32Array, pm: PadMap, p: GenParams, onProgress?: (frac: number) => void): number {
+function hydraulicErosion(H: Float32Array, pm: PadMap, p: ErosionSettings, onProgress?: (frac: number) => void): number {
   const { N, T, P, W, map } = pm;
   const tm = texelMeters(N, p.radius);
   const k = UNIT_PER_SLOPE / tm;
-  for (let i = 0; i < H.length; i++) H[i] *= k;
+  const sea0 = p.seaLevel;
+  // Work relative to the sea level so "below 0" means "in the sea".
+  const off = Number.isFinite(sea0) ? sea0 : 0;
+  for (let i = 0; i < H.length; i++) H[i] = (H[i] - off) * k;
+  const seaK = Number.isFinite(sea0) ? 0 : -Infinity;
 
   // Count land texels to size the droplet budget.
   let land = 0;
   for (let f = 0; f < 6; f++)
     for (let y = 1; y <= N; y++)
-      for (let x = 1; x <= N; x++) if (H[(f * T + y) * T + x] > 0) land++;
-  const count = Math.floor(p.erosionDroplets * land);
+      for (let x = 1; x <= N; x++) if (H[(f * T + y) * T + x] > seaK) land++;
+  // Droplet paths lengthen with N (maxLife ~ N/6), so the per-texel density falls as (256/N)^1.5 to keep N=512 fast.
+  const count = Math.floor(p.droplets * land * Math.min(1, Math.pow(256 / N, 1.5)));
 
   // Brush offsets & weights.
   const r = p.brushRadius;
@@ -93,7 +108,7 @@ function hydraulicErosion(H: Float32Array, pm: PadMap, p: GenParams, onProgress?
       px = lo + rng.next() * N;
       py = lo + rng.next() * N;
       const ix = Math.floor(px + 0.5), iy = Math.floor(py + 0.5);
-      ok = H[(f * T + iy) * T + ix] > 0;
+      ok = H[(f * T + iy) * T + ix] > seaK;
     }
     if (!ok) continue;
     let dx = 0, dy = 0, speed = 1, water = 1, sed = 0;
@@ -145,7 +160,7 @@ function hydraulicErosion(H: Float32Array, pm: PadMap, p: GenParams, onProgress?
         + H[map[ns + W]] * (1 - nfx) * nfy + H[map[ns + W + 1]] * nfx * nfy;
       const dh = nh - h;
 
-      if (nh < 0) {
+      if (nh < seaK) {
         // Reached the sea: drop the load at the coast (spread with the brush) and stop.
         const amt = Math.min(sed, Math.max(0, h) + 0.002);
         if (amt > 0) {
@@ -179,12 +194,12 @@ function hydraulicErosion(H: Float32Array, pm: PadMap, p: GenParams, onProgress?
   }
   if (onProgress) onProgress(1);
   const ik = 1 / k;
-  for (let i = 0; i < H.length; i++) H[i] *= ik;
+  for (let i = 0; i < H.length; i++) H[i] = H[i] * ik + off;
   return count;
 }
 
 /** Talus relaxation: material slides from texels steeper than the talus angle to their lowest neighbour. */
-function thermalErosion(H: Float32Array, pm: PadMap, p: GenParams): void {
+function thermalErosion(H: Float32Array, pm: PadMap, p: ErosionSettings): void {
   const { N, T, P, W, map } = pm;
   const maxDiff = Math.tan((p.talusAngle * Math.PI) / 180) * texelMeters(N, p.radius);
   const offs = [-1, 1, -W, W];
@@ -218,9 +233,10 @@ function thermalErosion(H: Float32Array, pm: PadMap, p: GenParams): void {
  * Flow accumulation by priority-flood: starting from the coast, land texels are visited in increasing (filled)
  * elevation; each texel drains into the neighbour that reached it. Every land texel therefore drains to the sea
  * (or to the global minimum on ocean-less worlds) and the drainage tree yields clean river networks.
- * Returns the upstream area (in texel units) per texel, 6·T·T with refilled gutters. Ocean texels get 0.
+ * Returns the upstream area (in texel units) per texel and the depression depth (filled level − height, m),
+ * both 6·T·T with refilled gutters. Sea texels (below `seaLevel`) get 0. `seaLevel` = -Infinity: no sea.
  */
-export function flowAccumulation(H: Float32Array, N: number, padMap?: PadMap): Float32Array {
+export function flowAccumulation(H: Float32Array, N: number, padMap?: PadMap, seaLevel = 0): { acc: Float32Array; fill: Float32Array } {
   const pm = padMap ?? buildPadMap(N, 4);
   const { T, P, W, map } = pm;
   const total = 6 * T * T;
@@ -249,12 +265,12 @@ export function flowAccumulation(H: Float32Array, N: number, padMap?: PadMap): F
         const idx = (f * T + y) * T + x;
         const h = H[idx];
         if (h < gmin) { gmin = h; gminIdx = idx; }
-        if (h < 0) {
+        if (h < seaLevel) {
           anyOcean = true;
           visited[idx] = 1;
           const slot = (f * W + (y + P - 1)) * W + (x + P - 1);
           for (let o = 0; o < 8; o++) {
-            if (H[map[slot + n8[o]]] >= 0) { heap.push(h, idx); break; }
+            if (H[map[slot + n8[o]]] >= seaLevel) { heap.push(h, idx); break; }
           }
         }
       }
@@ -264,10 +280,11 @@ export function flowAccumulation(H: Float32Array, N: number, padMap?: PadMap): F
   }
 
   const TT = T * T;
+  const fill = new Float32Array(total);
   while (heap.size > 0) {
     const level = heap.topKey();
     const idx = heap.pop();
-    if (H[idx] >= 0) order[orderLen++] = idx;
+    if (H[idx] >= seaLevel) { order[orderLen++] = idx; fill[idx] = Math.max(0, level - H[idx]); }
     const f = Math.floor(idx / TT);
     const rem = idx - f * TT;
     const y = Math.floor(rem / T);
@@ -292,10 +309,11 @@ export function flowAccumulation(H: Float32Array, N: number, padMap?: PadMap): F
   for (let i = orderLen - 1; i >= 0; i--) {
     const idx = order[i];
     const pa = parent[idx];
-    if (pa >= 0 && H[pa] >= 0) acc[pa] += acc[idx];
+    if (pa >= 0 && H[pa] >= seaLevel) acc[pa] += acc[idx];
   }
   refillGutters(acc, N);
-  return acc;
+  refillGutters(fill, N);
+  return { acc, fill };
 }
 
 /** Binary min-heap of (float key, int value) with typed-array storage. */

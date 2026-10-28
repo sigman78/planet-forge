@@ -1,352 +1,352 @@
-// Terrain stage: raw height (≈ km, before sea-level shift and scaling) as a pure function of direction,
-// evaluated per cube face (gutters included), plus rasterised craters and volcanoes.
+// Terrain stage (per cube face, gutters included): replays the formation history of the WorldPlan onto the face.
+//   crust (dichotomy, low-degree thickness, lumpy figure) -> giant basins -> old craters -> rises -> volcanoes
+//   -> rifts / graben / fissures -> scarps -> ice tectonics (lineae, grooves) -> chaos / cantaloupe -> polar domes.
+// Young craters go into a separate delta (added after the flood basalts in the cube stage).
+// Heights are metres relative to the undisturbed mean radius (the datum is fixed later).
 
 import { faceToDir, texelToS, unwarp, FACE_BASIS } from '../core/cube.ts';
 import type { Vec3 } from '../core/cube.ts';
 import { Noise3, Rng, smoothstep } from './noise.ts';
-import type { GenParams } from './params.ts';
+import { CRATER_STRIDE } from './world.ts';
+import type { WorldPlan } from './world.ts';
 
-export interface TerrainContext {
-  p: GenParams;
-  N: number;
-  noise: Noise3;
-  /** Plate centres (unit vectors), K*3. */
-  plateC: Float64Array;
-  /** Plate rotation vectors (Euler pole * angular speed), K*3. */
-  plateW: Float64Array;
-  /** Plate crust type: +1 continental … -1 oceanic. */
-  plateType: Float64Array;
-  K: number;
-  /** Continent-value threshold that splits area into ocean/land at the requested coverage. */
-  c0: number;
-  /** Craters: [x, y, z, radius(rad), depth(raw km), rimHeight, peak] * count. */
-  craters: Float64Array;
-  craterCount: number;
-  /** Volcanoes: [x, y, z, radius(rad), height(raw km), caldera] * count. */
-  volcanoes: Float64Array;
-  volcanoCount: number;
-  // Octave counts derived from resolution.
-  octCont: number;
-  octRidge: number;
-  octHills: number;
-  octDetail: number;
+/** Volcano kind per texel (FaceTerrain.vkind). */
+export const VK = { NONE: 0, EDIFICE: 1, CALDERA: 2, CRYO: 3, BLOCK: 4 } as const;
+
+/** Tectonic codes stored in featA.B. */
+export const TECT = { GROOVES: 40, LINEAE: 60, FOSSAE: 100, FISSURE: 160, CANYON: 255 } as const;
+
+/**
+ * Per-face terrain output. Feature masks (0..255) drive geologic units and splat weights later:
+ *   featA: R ejecta, G volcanic edifice cover, B tectonic code (TECT), A basin floor (255) / palimpsest (120)
+ *   featB: R basin rim & rings, G chaos (255) / cantaloupe (100), B lava or cryolava flows, A rays (≤240) / facula (255)
+ */
+export interface FaceTerrain {
+  height: Float32Array;
+  young: Float32Array;
+  featA: Uint8Array;
+  featB: Uint8Array;
+  vkind: Uint8Array;
 }
 
-const CRATER_STRIDE = 7;
-const VOLCANO_STRIDE = 6;
-/** Ejecta reach in crater radii. */
-const EJECTA = 2.4;
+export interface TerrainContext {
+  plan: WorldPlan;
+  N: number;
+  noise: Noise3;
+  octRough: number;
+  /** Scarp tangent frames (e1, e2 per scarp, 6 floats). */
+  scarpFrames: Float64Array;
+  /** Ice lineae: great-circle arcs, LIN_STRIDE floats each (normal, start axis, length, half-width, amp, band). */
+  lineae: Float64Array;
+}
 
-/** Octaves so the finest octave of a noise with base frequency F stays above ~2.5 texels. */
+const LIN_STRIDE = 10;
+
+/**
+ * Europa-style lineae: long, gently wandering great-circle arcs (double ridges with a central groove), plus a few
+ * wide dark bands. Younger arcs (later in the list) are stronger and cross the older ones. Pure function of the plan.
+ */
+function planLineae(plan: WorldPlan): Float64Array {
+  if (!plan.icy || plan.s.lineae <= 0.05 || plan.grooves.length > 0) return new Float64Array(0);
+  const rng = new Rng(plan.p.seed, 77);
+  const R = plan.bulk.radiusKm;
+  const count = Math.round(26 + 44 * plan.s.lineae);
+  const out = new Float64Array(count * LIN_STRIDE);
+  for (let k = 0; k < count; k++) {
+    // Random pole; reference axis in the great-circle plane.
+    const z = rng.range(-1, 1), ph = rng.range(0, Math.PI * 2), rr = Math.sqrt(1 - z * z);
+    const nx = rr * Math.cos(ph), ny = z, nz = rr * Math.sin(ph);
+    let sx = -nz, sy = 0, sz = nx;
+    if (Math.hypot(sx, sz) < 1e-3) { sx = 1; sy = 0; sz = 0; }
+    const l = 1 / Math.hypot(sx, sy, sz);
+    sx *= l; sy *= l; sz *= l;
+    const band = rng.next() < 0.12 ? 1 : 0;
+    const len = band ? rng.range(0.4, 1.2) : rng.range(0.6, 2.8);
+    const a0 = rng.range(-Math.PI, Math.PI);
+    const widthKm = band ? rng.range(10, 24) : rng.range(2.5, 7) * plan.p.drama;
+    const age = k / Math.max(1, count - 1); // 0 oldest .. 1 youngest
+    out.set([nx, ny, nz, sx, sy, sz, len + a0 * 0, widthKm / R, (0.45 + 0.55 * age) * (band ? -0.35 : 1), band], k * LIN_STRIDE);
+    out[k * LIN_STRIDE + 6] = len;
+    // Rotate the start axis by a0 inside the plane so arcs start anywhere.
+    const tx = ny * sz - nz * sy, ty = nz * sx - nx * sz, tz = nx * sy - ny * sx;
+    const c = Math.cos(a0), si = Math.sin(a0);
+    out[k * LIN_STRIDE + 3] = sx * c + tx * si; out[k * LIN_STRIDE + 4] = sy * c + ty * si; out[k * LIN_STRIDE + 5] = sz * c + tz * si;
+  }
+  return out;
+}
+
 function octavesFor(F: number, N: number, max: number): number {
   const texelsPerRadian = N / (Math.PI / 2);
   const o = Math.floor(Math.log2(texelsPerRadian / (2.5 * F))) + 1;
   return Math.max(1, Math.min(max, o));
 }
 
-export function prepareTerrain(p: GenParams): TerrainContext {
-  const N = p.resolution;
-  const noise = new Noise3(p.seed);
-  const rng = new Rng(p.seed, 101);
-
-  // --- plates: jittered points on the sphere (best-candidate sampling for even spacing) ---
-  const K = p.plateCount;
-  const plateC = new Float64Array(K * 3);
-  const plateW = new Float64Array(K * 3);
-  const plateType = new Float64Array(K);
-  const cand = new Float64Array(3);
-  for (let k = 0; k < K; k++) {
-    let best = -1, bestD = -Infinity;
-    for (let c = 0; c < 8; c++) {
-      rng.unitVec(cand);
-      let minD = Infinity;
-      for (let j = 0; j < k; j++) {
-        const d = 1 - (cand[0] * plateC[j * 3] + cand[1] * plateC[j * 3 + 1] + cand[2] * plateC[j * 3 + 2]);
-        if (d < minD) minD = d;
-      }
-      if (minD > bestD) { bestD = minD; best = c; plateC[k * 3] = cand[0]; plateC[k * 3 + 1] = cand[1]; plateC[k * 3 + 2] = cand[2]; }
-    }
-    void best;
-    rng.unitVec(plateW, k * 3);
-    const speed = 0.4 + rng.next() * 0.8;
-    plateW[k * 3] *= speed; plateW[k * 3 + 1] *= speed; plateW[k * 3 + 2] *= speed;
-    // Roughly the land fraction of plates is continental.
-    const landFrac = 1 - p.oceanCoverage;
-    plateType[k] = rng.next() < landFrac * 0.9 + 0.05 ? 0.6 + 0.4 * rng.next() : -(0.6 + 0.4 * rng.next());
-  }
-
-  const ctx: TerrainContext = {
-    p, N, noise, plateC, plateW, plateType, K, c0: 0,
-    craters: new Float64Array(0), craterCount: 0, volcanoes: new Float64Array(0), volcanoCount: 0,
-    octCont: octavesFor(p.continentFreq * 2, N, 8),
-    octRidge: octavesFor(5, N, 7),
-    octHills: octavesFor(7, N, 6),
-    octDetail: octavesFor(24, N, 5),
-  };
-
-  // --- continent threshold from an area-uniform presample (Fibonacci sphere) ---
-  const S = 6000;
-  const vals = new Float64Array(S);
-  const ga = Math.PI * (3 - Math.sqrt(5));
-  for (let i = 0; i < S; i++) {
-    const y = 1 - (2 * (i + 0.5)) / S;
-    const r = Math.sqrt(1 - y * y);
-    const a = ga * i;
-    vals[i] = continentValue(ctx, r * Math.cos(a), y, r * Math.sin(a));
-  }
-  vals.sort();
-  ctx.c0 = vals[Math.min(S - 1, Math.floor(p.oceanCoverage * S))];
-
-  // --- craters: power-law radii, uniform positions ---
-  const nc = p.craterCount;
-  if (nc > 0) {
-    const cr = new Float64Array(nc * CRATER_STRIDE);
-    const crng = new Rng(p.seed, 202);
-    const rMax = p.craterSize;
-    const rMin = rMax * 0.04;
-    const alpha = 1.6;
-    const q = Math.pow(rMin / rMax, alpha);
-    for (let i = 0; i < nc; i++) {
-      crng.unitVec(cr, i * CRATER_STRIDE);
-      const u = crng.next();
-      const R = rMin * Math.pow(1 - u * (1 - q), -1 / alpha);
-      const Rkm = R * p.radius / 1000;
-      // depth/diameter ≈ 0.2 for small simple craters, shallower for big complex ones.
-      const depth = p.craterDepth * 0.4 * Rkm / (1 + Rkm / 25) * (0.8 + 0.4 * crng.next());
-      const o = i * CRATER_STRIDE;
-      cr[o + 3] = R;
-      cr[o + 4] = depth;
-      cr[o + 5] = depth * (0.22 + 0.1 * crng.next());
-      cr[o + 6] = Rkm > 30 ? depth * (0.25 + 0.2 * crng.next()) : 0;
-    }
-    // Draw big (old) craters first so small ones land on top.
-    const order = Array.from({ length: nc }, (_, i) => i).sort((a, b) => cr[b * CRATER_STRIDE + 3] - cr[a * CRATER_STRIDE + 3] || a - b);
-    const sorted = new Float64Array(nc * CRATER_STRIDE);
-    order.forEach((src, dst) => sorted.set(cr.subarray(src * CRATER_STRIDE, src * CRATER_STRIDE + CRATER_STRIDE), dst * CRATER_STRIDE));
-    ctx.craters = sorted;
-    ctx.craterCount = nc;
-  }
-
-  // --- volcanoes: prefer land / plate boundaries is too costly to search; place randomly with land bias ---
-  const nv = p.volcanoCount;
-  if (nv > 0) {
-    const vv = new Float64Array(nv * VOLCANO_STRIDE);
-    const vrng = new Rng(p.seed, 303);
-    for (let i = 0; i < nv; i++) {
-      const o = i * VOLCANO_STRIDE;
-      // Rejection-sample towards land (continent value above threshold) for most volcanoes.
-      for (let tries = 0; tries < 12; tries++) {
-        vrng.unitVec(vv, o);
-        if (continentValue(ctx, vv[o], vv[o + 1], vv[o + 2]) > ctx.c0 - 0.05 || vrng.next() < 0.15) break;
-      }
-      const R = p.volcanoSize * (0.25 + 0.75 * Math.pow(vrng.next(), 2));
-      const Rkm = R * p.radius / 1000;
-      vv[o + 3] = R;
-      vv[o + 4] = Math.min(9, 0.12 * Rkm) * (0.6 + 0.6 * vrng.next());
-      vv[o + 5] = 0.08 + 0.1 * vrng.next();
-    }
-    ctx.volcanoes = vv;
-    ctx.volcanoCount = nv;
-  }
-  return ctx;
+export function prepareTerrain(plan: WorldPlan): TerrainContext {
+  const N = plan.p.resolution;
+  const fr = new Float64Array(plan.scarpList.length * 6);
+  plan.scarpList.forEach((s, i) => {
+    const ref = Math.abs(s.cy) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    let ex = ref[1] * s.cz - ref[2] * s.cy, ey = ref[2] * s.cx - ref[0] * s.cz, ez = ref[0] * s.cy - ref[1] * s.cx;
+    const l = 1 / Math.hypot(ex, ey, ez);
+    ex *= l; ey *= l; ez *= l;
+    fr.set([ex, ey, ez, s.cy * ez - s.cz * ey, s.cz * ex - s.cx * ez, s.cx * ey - s.cy * ex], i * 6);
+  });
+  return { plan, N, noise: new Noise3(plan.p.seed), octRough: octavesFor(8, N, 6), scarpFrames: fr, lineae: planLineae(plan) };
 }
 
-/** Continent value (domain-warped fbm + plate crust type). Land where value > ctx.c0. */
-export function continentValue(ctx: TerrainContext, x: number, y: number, z: number): number {
-  const p = ctx.p;
-  const n = ctx.noise;
-  const f = p.continentFreq;
-  const w = n.warp3(x * f * 0.7, y * f * 0.7, z * f * 0.7, 3);
-  const ws = p.warpStrength * 0.45;
-  const qx = x + ws * w[0], qy = y + ws * w[1], qz = z + ws * w[2];
-  let c = n.fbm(qx * f + 3.1, qy * f - 1.7, qz * f + 0.3, ctx.octCont, 2, 0.52);
-  c += plateBlend(ctx, qx, qy, qz) * p.plateInfluence * 0.32;
-  return c;
-}
+const clampB = (v: number) => (v <= 0 ? 0 : v >= 1 ? 255 : Math.round(v * 255));
 
-// Scratch for plate queries (module-level: one terrain evaluation at a time per worker).
-const _pl = { i: 0, j: 0, k: 0, di: 0, dj: 0, dk: 0, type: 0 };
-
-/** Finds the 3 nearest plates to (x,y,z) (not necessarily unit) and returns the soft crust type. */
-function plateBlend(ctx: TerrainContext, x: number, y: number, z: number): number {
-  const C = ctx.plateC;
-  const inv = 1 / Math.sqrt(x * x + y * y + z * z);
-  x *= inv; y *= inv; z *= inv;
-  let i = 0, j = 0, k = 0, di = -2, dj = -2, dk = -2;
-  for (let m = 0; m < ctx.K; m++) {
-    const d = x * C[m * 3] + y * C[m * 3 + 1] + z * C[m * 3 + 2];
-    if (d > di) { k = j; dk = dj; j = i; dj = di; i = m; di = d; }
-    else if (d > dj) { k = j; dk = dj; j = m; dj = d; }
-    else if (d > dk) { k = m; dk = d; }
-  }
-  _pl.i = i; _pl.j = j; _pl.k = k; _pl.di = di; _pl.dj = dj; _pl.dk = dk;
-  // Softmax-style membership so the crust type is continuous across plate switches.
-  const sharp = 18;
-  const wj = Math.exp((dj - di) * sharp);
-  const wk = Math.exp((dk - di) * sharp);
-  const T = ctx.plateType;
-  const t = (T[i] + wj * T[j] + wk * T[k]) / (1 + wj + wk);
-  _pl.type = t;
-  return t;
-}
-
-/** Closing speed between plates a and b at point (x,y,z): >0 convergent, <0 divergent. */
-function convergence(ctx: TerrainContext, a: number, b: number, x: number, y: number, z: number): number {
-  const C = ctx.plateC, W = ctx.plateW;
-  // Boundary normal pointing from b to a.
-  let nx = C[a * 3] - C[b * 3], ny = C[a * 3 + 1] - C[b * 3 + 1], nz = C[a * 3 + 2] - C[b * 3 + 2];
-  const nl = 1 / (Math.sqrt(nx * nx + ny * ny + nz * nz) + 1e-9);
-  nx *= nl; ny *= nl; nz *= nl;
-  // v = w × p for each plate; relative velocity of b w.r.t. a.
-  const wx = W[b * 3] - W[a * 3], wy = W[b * 3 + 1] - W[a * 3 + 1], wz = W[b * 3 + 2] - W[a * 3 + 2];
-  const vx = wy * z - wz * y, vy = wz * x - wx * z, vz = wx * y - wy * x;
-  // b moving towards a (along +n) means closing.
-  const c = (vx * nx + vy * ny + vz * nz) / 1.2;
-  return c < -1 ? -1 : c > 1 ? 1 : c;
-}
-
-/** Raw terrain height (≈ km) at a unit direction. Does not include craters/volcanoes (rasterised separately). */
-export function terrainHeight(ctx: TerrainContext, x: number, y: number, z: number): number {
-  const p = ctx.p;
-  const n = ctx.noise;
-  const f = p.continentFreq;
-
-  // --- continents (shared with the presample) ---
-  const w = n.warp3(x * f * 0.7, y * f * 0.7, z * f * 0.7, 3);
-  const ws = p.warpStrength * 0.45;
-  const w0 = w[0], w1 = w[1], w2 = w[2];
-  const qx = x + ws * w0, qy = y + ws * w1, qz = z + ws * w2;
-  let c = n.fbm(qx * f + 3.1, qy * f - 1.7, qz * f + 0.3, ctx.octCont, 2, 0.52);
-  const crust = plateBlend(ctx, qx, qy, qz);
-  c += crust * p.plateInfluence * 0.32;
-  const e = c - ctx.c0; // > 0 land
-
-  const sw = p.shelfWidth;
-  const land = smoothstep(-0.015, 0.05, e);
-  const ocean = 1 - smoothstep(-0.06, 0.0, e);
-
-  // --- base: lowlands rising inland, continental shelf, slope and abyssal plain ---
-  let h: number;
-  if (e >= 0) {
-    h = 0.7 * (1 - Math.exp(-e / 0.18));
-  } else {
-    const d = -e;
-    h = -0.12 * smoothstep(0, sw, d) - 3.6 * smoothstep(sw * 0.8, sw * 2.2, d) - 0.8 * smoothstep(sw * 2, sw * 6, d);
-    // Abyssal hills.
-    h += 0.25 * smoothstep(sw, sw * 3, d) * n.fbm(x * 9 + 7.7, y * 9, z * 9 - 3.3, 3);
-  }
-
-  // --- plateaus with escarpment edges ---
-  if (p.plateaus > 0 && land > 0) {
-    const pm = n.fbm(x * 2.3 + 11.1, y * 2.3 - 4.4, z * 2.3 + 8.8, 4, 2, 0.55);
-    const pl = smoothstep(0.08, 0.16, pm + 0.1 * e);
-    h += p.plateaus * 1.3 * pl * land;
-  }
-
-  // --- tectonics: plate boundary belts (using the 3 nearest plates from plateBlend at the warped point) ---
-  const i = _pl.i, j = _pl.j, k = _pl.k;
-  const bij = (_pl.di - _pl.dj) / 0.9; // ≈ angular distance to the i|j boundary
-  const bik = (_pl.di - _pl.dk) / 0.9;
-  const wjk = smoothstep(-0.03, 0.03, _pl.dj - _pl.dk); // j vs k as "the" neighbour, continuous
-  const cij = convergence(ctx, i, j, x, y, z);
-  const cik = convergence(ctx, i, k, x, y, z);
-  // Width varies along the belt.
-  const wMod = 0.65 + 0.7 * (0.5 + 0.5 * n.simplex(x * 3 + 5.5, y * 3 - 2.2, z * 3 + 9.9));
-  const W = p.mountainWidth * wMod;
-  const bandJ = Math.exp(-(bij * bij) / (W * W));
-  const bandK = Math.exp(-(bik * bik) / (W * W));
-  const conv = cij * wjk + cik * (1 - wjk);
-  const band = bandJ * wjk + bandK * (1 - wjk);
-  const convPos = (Math.max(0, cij) * bandJ * wjk + Math.max(0, cik) * bandK * (1 - wjk));
-  const convNeg = (Math.max(0, -cij) * bandJ * wjk + Math.max(0, -cik) * bandK * (1 - wjk));
-  void conv;
-
-  if (p.mountainStrength > 0) {
-    // Collision ranges on land, island arcs at sea.
-    const where = land + 0.35 * (1 - land);
-    // Gaps along belts.
-    const gate = smoothstep(-0.35, 0.25, n.fbm(x * 4.1 - 9.1, y * 4.1 + 2.7, z * 4.1 + 6.3, 2));
-    const m = p.mountainStrength * Math.pow(convPos, 0.75) * where * gate;
-    if (m > 0.004) {
-      const rf = 6.5;
-      const r = n.ridged(x * rf + w0 * 0.25, y * rf + w1 * 0.25, z * rf + w2 * 0.25, ctx.octRidge, p.ridgeSharpness);
-      h += m * (1.1 * band + 4.6 * r * (0.35 + 0.65 * band));
-    }
-    // Old, worn ranges inside continents (Appalachian / Urals style).
-    const om = smoothstep(0.12, 0.3, n.fbm(x * 1.7 - 21.3, y * 1.7 + 3.3, z * 1.7 + 12.2, 3)) * land;
-    if (om > 0.004) {
-      const r = n.ridged(x * 9 - 4.4, y * 9 + 1.1, z * 9 + 2.2, ctx.octRidge, p.ridgeSharpness * 0.8);
-      h += p.mountainStrength * om * 1.6 * r;
-    }
-    // Ocean trenches at convergent boundaries.
-    const tb = (bij * wjk + bik * (1 - wjk));
-    const tw = W * 0.35;
-    h -= 2.8 * p.mountainStrength * ocean * Math.max(0, cij * wjk + cik * (1 - wjk)) * Math.exp(-(tb * tb) / (tw * tw));
-    // Mid-ocean ridges with a central rift; rift valleys on land.
-    if (convNeg > 0.004) {
-      const rw = W * 0.12;
-      const rift = Math.exp(-(tb * tb) / (rw * rw));
-      h += ocean * convNeg * (1.6 - 1.0 * rift) * (0.8 + 0.4 * n.ridged(x * 14, y * 14, z * 14, 2, 1.5));
-      h -= land * convNeg * 0.9 * rift;
-    }
-  }
-
-  // --- hills ---
-  if (p.hills > 0) {
-    const hm = 0.35 + 0.65 * smoothstep(-0.25, 0.35, n.fbm(x * 2.1 + 40.1, y * 2.1, z * 2.1 - 13.7, 3));
-    const hv = n.fbm(x * 7 - 2.9, y * 7 + 6.6, z * 7 + 1.4, ctx.octHills, 2, 0.5);
-    h += p.hills * 0.55 * hv * hm * (0.15 + 0.85 * land);
-  }
-
-  // --- fine detail everywhere (makes coastlines fractal) ---
-  if (p.detail > 0) {
-    h += p.detail * 0.14 * n.fbm(x * 24 + 1.9, y * 24 - 7.3, z * 24 + 3.7, ctx.octDetail, 2, 0.5);
-  }
-
-  // --- terraces / mesas on land ---
-  if (p.terracing > 0 && h > 0) {
-    const step = 0.42;
-    const t = h / step;
-    const fl = Math.floor(t);
-    const fr = t - fl;
-    const terr = (fl + 0.12 * fr + 0.88 * smoothstep(0.55, 0.9, fr)) * step;
-    h += (terr - h) * p.terracing;
-  }
-
-  // --- dunes: transverse ridges, crests running north-south, in lowland ergs ---
-  if (p.dunes > 0 && h > -0.05) {
-    const erg = smoothstep(0.0, 0.25, n.fbm(x * 3.1 + 70.3, y * 3.1 - 1.1, z * 3.1 + 5.5, 3)) * (1 - smoothstep(0.4, 1.4, h)) * land;
-    if (erg > 0.004) {
-      const df = ctx.N * 0.14;
-      const dn = n.ridged(x * df, y * df * 0.3, z * df, 2, 1.6);
-      h += p.dunes * 0.12 * erg * dn;
-    }
-  }
-  return h;
-}
-
-/**
- * Raw height for one face, all T×T texels (gutters evaluated from direction).
- * Also rasterises volcanoes and craters onto the face.
- */
-export function generateTerrainFace(ctx: TerrainContext, face: number): Float32Array {
-  const N = ctx.N;
+/** Generate one face (T×T texels including gutters). */
+export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerrain {
+  const { plan, N, noise: n } = ctx;
   const T = N + 2;
-  const out = new Float32Array(T * T);
-  const dirs = new Float32Array(T * T * 3);
+  const TT = T * T;
+  const low = new Float32Array(TT);
+  const det = new Float32Array(TT);
+  const young = new Float32Array(TT);
+  const featA = new Uint8Array(TT * 4);
+  const featB = new Uint8Array(TT * 4);
+  const vkind = new Uint8Array(TT);
+  const dirs = new Float32Array(TT * 3);
   const d: Vec3 = [0, 0, 0];
+
+  const ax = plan.dichoAxis;
+  const icy = plan.icy;
   for (let y = 0; y < T; y++) {
     const t = texelToS(y, N);
     for (let x = 0; x < T; x++) {
       faceToDir(face, texelToS(x, N), t, d);
-      const idx = y * T + x;
-      dirs[idx * 3] = d[0]; dirs[idx * 3 + 1] = d[1]; dirs[idx * 3 + 2] = d[2];
-      out[idx] = terrainHeight(ctx, d[0], d[1], d[2]);
+      const i = y * T + x;
+      const px = d[0], py = d[1], pz = d[2];
+      dirs[i * 3] = px; dirs[i * 3 + 1] = py; dirs[i * 3 + 2] = pz;
+
+      // --- primordial crust ---
+      const w = n.warp3(px * 1.3, py * 1.3, pz * 1.3, 2);
+      const dd = px * ax[0] + py * ax[1] + pz * ax[2] + 0.35 * w[0];
+      let h = plan.dichoAmp * 0.8 * Math.tanh(2.6 * dd);
+      h += plan.crustAmp * n.fbm(px * 1.4 + 0.3 * w[1] + 5.1, py * 1.4 + 0.3 * w[2], pz * 1.4 - 2.2, 4);
+      if (plan.shapeAmp > 0) h += plan.shapeAmp * 2 * n.fbm(px * 0.75 - 7.7, py * 0.75 + 3.3, pz * 0.75 + 1.1, 2);
+
+      // --- giant basins (multi-ring) ---
+      let floorA = 0, rimB = 0;
+      for (const b of plan.basins) {
+        const dot = px * b.x + py * b.y + pz * b.z;
+        const ang = Math.acos(Math.min(1, Math.max(-1, dot)));
+        const xr = ang / b.r;
+        if (xr > 2.6) continue;
+        const rimH = b.depth * 0.22;
+        let bh: number;
+        if (xr < 1) {
+          bh = -b.depth * (1 - Math.pow(smoothstep(0.45, 1.0, xr), 1.2)) + rimH * smoothstep(0.8, 1.0, xr);
+          if (b.peak > 0) bh += b.peak * Math.exp(-(xr * xr) / 0.012) * (0.85 + 0.15 * n.simplex(px * 40, py * 40, pz * 40));
+          floorA = Math.max(floorA, smoothstep(0.92, 0.7, xr));
+        } else {
+          const tail = Math.pow(2.6, -3);
+          bh = (rimH * (Math.pow(xr, -3) - tail)) / (1 - tail);
+          for (let k = 1; k <= b.rings; k++) {
+            const rr = 1 + 0.42 * k;
+            const ring = Math.exp(-(((xr - rr) / 0.045) ** 2));
+            bh += rimH * (0.7 / k) * ring - rimH * 0.25 * Math.exp(-(((xr - rr + 0.12) / 0.06) ** 2));
+            rimB = Math.max(rimB, ring * 0.9);
+          }
+        }
+        rimB = Math.max(rimB, Math.exp(-(((xr - 1) / 0.07) ** 2)));
+        h += bh;
+      }
+
+      // --- volcanic rises ---
+      for (const r of plan.rises) {
+        const dot = px * r.x + py * r.y + pz * r.z;
+        if (dot < 0) continue;
+        const ang = Math.acos(Math.min(1, dot)) / r.r;
+        h += r.h * Math.exp(-ang * ang * 2.2) * (1 + 0.12 * n.fbm(px * 6, py * 6, pz * 6, 2));
+      }
+
+      // --- polar layered domes with spiral troughs ---
+      const lat = Math.asin(py);
+      const capLat = py >= 0 ? plan.capLat[0] : plan.capLat[1];
+      if (plan.capDome > 0 && Math.abs(lat) > capLat - 0.05) {
+        const k = smoothstep(capLat - 0.05, capLat + 0.12, Math.abs(lat));
+        const lon = Math.atan2(pz, px);
+        const sp = Math.sin(lon * 3 * Math.sign(py || 1) + (Math.PI / 2 - Math.abs(lat)) * 70 + 2 * n.simplex(px * 5, py * 5, pz * 5));
+        h += plan.capDome * k * (1 - 0.18 * smoothstep(0.6, 0.95, sp) * k);
+      }
+
+      low[i] = h;
+      // --- small-scale roughness of the old crust (buried by later lava) ---
+      const rough = (icy ? 0.12 : 0.22) * plan.crustAmp;
+      det[i] = rough * n.fbm(px * 8 + 1.9, py * 8 - 7.3, pz * 8 + 3.7, ctx.octRough, 2.1, 0.55) * (1 - 0.7 * floorA);
+      featA[i * 4 + 3] = clampB(floorA);
+      featB[i * 4] = clampB(rimB);
     }
   }
-  if (ctx.volcanoCount > 0) rasterVolcanoes(ctx, face, out, dirs);
-  if (ctx.craterCount > 0) rasterCraters(ctx, face, out, dirs);
-  return out;
+
+  // --- old craters on the detail layer, young craters on their own layer ---
+  rasterCraters(ctx, face, plan.oldCraters, det, dirs, featA, featB, false);
+  rasterCraters(ctx, face, plan.youngCraters, young, dirs, featA, featB, true);
+
+  // --- volcanoes (bury the detail under their footprint) ---
+  rasterVolcanoes(ctx, face, low, det, dirs, featA, featB, vkind);
+
+  // --- combine, then tectonics and ice-shell features per texel ---
+  const height = new Float32Array(TT);
+  const hasRifts = plan.rifts.length > 0;
+  // Linear features never get narrower than a few texels (sub-texel lines alias into dotted dashes).
+  const tex = Math.PI / 2 / N;
+  for (let i = 0; i < TT; i++) {
+    const px = dirs[i * 3], py = dirs[i * 3 + 1], pz = dirs[i * 3 + 2];
+    let h = low[i] + det[i];
+    let tect = featA[i * 4 + 2];
+    // Rifts and scarps postdate the flood basalts: they cut the maria, so they go into the post-flood layer.
+    let late = 0;
+
+    if (hasRifts) {
+      // Slightly wiggly troughs.
+      const wx = px + 0.012 * n.simplex(px * 9 + 4.4, py * 9, pz * 9);
+      const wy = py + 0.012 * n.simplex(px * 9, py * 9 + 8.8, pz * 9);
+      const wz = pz + 0.012 * n.simplex(px * 9, py * 9, pz * 9 - 6.6);
+      for (let k = 0; k < plan.rifts.length; k++) {
+        const r = plan.rifts[k];
+        const dp = wx * r.nx + wy * r.ny + wz * r.nz;
+        const minW = (r.kind === 2 ? 2.6 : 1.6) * tex;
+        const rw = Math.max(r.w, minW);
+        if (Math.abs(dp) > rw * 2.5) continue;
+        // Along-arc position.
+        const tx = r.ny * r.sz - r.nz * r.sy, ty = r.nz * r.sx - r.nx * r.sz, tz = r.nx * r.sy - r.ny * r.sx;
+        const along = Math.atan2(wx * tx + wy * ty + wz * tz, wx * r.sx + wy * r.sy + wz * r.sz);
+        if (along < -rw * 2 || along > r.len + rw * 2) continue;
+        const taper = smoothstep(-rw, r.len * 0.12, along) * smoothstep(r.len + rw, r.len * 0.85, along);
+        if (taper <= 0) continue;
+        const wv = Math.max(minW, rw * (0.75 + 0.5 * (0.5 + 0.5 * n.simplex(along * 7 + k * 3.1, k * 1.7, 0.5))));
+        const u = Math.abs(dp) / wv;
+        if (r.kind === 0) {
+          // Canyon: steep layered walls, flat floor, slightly raised shoulders.
+          let wall = 1 - smoothstep(0.55, 1.0, u);
+          const nl = Math.max(1, Math.min(5, Math.floor((0.45 * wv) / (1.5 * tex))));
+          const lay = wall * nl;
+          wall = (Math.floor(lay) + smoothstep(0.2, 0.8, lay - Math.floor(lay))) / nl;
+          late -= r.depth * taper * wall;
+          late += r.depth * 0.04 * taper * Math.exp(-(((u - 1.3) / 0.3) ** 2));
+          if (u < 1.1 * taper + 0.05 && taper > 0.2) tect = TECT.CANYON;
+        } else if (r.kind === 1) {
+          late -= r.depth * taper * (1 - smoothstep(0.6, 1.0, u));
+          if (u < 1 && taper > 0.3 && tect < TECT.FOSSAE) tect = TECT.FOSSAE;
+        } else {
+          // Fissure with flanking ridges.
+          late += r.depth * taper * (0.55 * Math.exp(-(((u - 1.2) / 0.45) ** 2)) - Math.exp(-((u / 0.45) ** 2)));
+          if (u < 2 && taper > 0.2) tect = Math.max(tect, TECT.FISSURE);
+        }
+      }
+    }
+
+    // Lobate scarps.
+    for (let k = 0; k < plan.scarpList.length; k++) {
+      const s = plan.scarpList[k];
+      const dot = px * s.cx + py * s.cy + pz * s.cz;
+      const ang = Math.acos(Math.min(1, Math.max(-1, dot)));
+      const sw = Math.max(s.w, 1.6 * tex), sback = Math.max(s.back, 3 * tex);
+      if (Math.abs(ang - s.rho) > sback * 4 + sw * 3) continue;
+      const f = ctx.scarpFrames;
+      let az = Math.atan2(px * f[k * 6 + 3] + py * f[k * 6 + 4] + pz * f[k * 6 + 5], px * f[k * 6] + py * f[k * 6 + 1] + pz * f[k * 6 + 2]) - s.a0;
+      az = ((az % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      if (az > s.a1) continue;
+      const taper = smoothstep(0, 0.15, az) * smoothstep(s.a1, s.a1 - 0.15, az);
+      const rho = s.rho + 0.012 * n.simplex(az * 6 + k, k * 2.3, 1.1);
+      const sd = (ang - rho) * s.face;
+      const prof = sd < 0 ? smoothstep(-sw, 0, sd) : Math.exp(-sd / sback);
+      late += s.h * taper * prof;
+      if (sd > -sw * 1.2 && sd < sw * 0.8 && taper > 0.3 && tect < TECT.FOSSAE) tect = TECT.FOSSAE;
+    }
+
+    // Ice tectonics: double-ridged lineae (great-circle arcs that wander a little) and dark bands on young shells.
+    const L = ctx.lineae;
+    if (L.length > 0) {
+      const amp = 260 * plan.relief * plan.gRel * plan.s.lineae;
+      const wob = 0.006 * n.simplex(px * 5 + 1.7, py * 5 - 3.1, pz * 5 + 0.4);
+      let lin = 0, bandM = 0;
+      for (let o = 0; o < L.length; o += LIN_STRIDE) {
+        const w = Math.max(L[o + 7], (L[o + 9] ? 2 : 1.6) * tex);
+        const dp = px * L[o] + py * L[o + 1] + pz * L[o + 2] + wob * (1 + (o % 3));
+        if (Math.abs(dp) > 2.2 * w) continue;
+        const ux = L[o + 3], uy = L[o + 4], uz = L[o + 5];
+        const vx = L[o + 1] * uz - L[o + 2] * uy, vy = L[o + 2] * ux - L[o] * uz, vz = L[o] * uy - L[o + 1] * ux;
+        let along = Math.atan2(px * vx + py * vy + pz * vz, px * ux + py * uy + pz * uz);
+        if (along < 0) along += Math.PI * 2;
+        const len = L[o + 6];
+        if (along > len) continue;
+        const taper = smoothstep(0, 0.12, along) * smoothstep(len, len - 0.12, along);
+        const a = L[o + 8];
+        const u = Math.abs(dp) / w;
+        if (L[o + 9]) {
+          // Dark band: flat, slightly lowered, sharp-edged strip.
+          const m = smoothstep(1.0, 0.75, u) * taper;
+          lin += a * m;
+          bandM = Math.max(bandM, m);
+        } else {
+          // Double ridge with a central groove (groove only where resolvable).
+          const groove = smoothstep(0.9 * tex, 1.8 * tex, 0.3 * w);
+          const prof = Math.exp(-(((u - 0.5) / 0.32) ** 2)) - groove * 0.8 * Math.exp(-((u / 0.22) ** 2));
+          lin += a * taper * prof;
+          if (u < 0.9 && taper > 0.3) bandM = Math.max(bandM, 0.6);
+        }
+      }
+      h += amp * lin;
+      if (bandM > 0.5 && tect < TECT.LINEAE) tect = TECT.LINEAE;
+    }
+    // Grooved bands on old ice.
+    for (const g of plan.grooves) {
+      const dp = px * g.nx + py * g.ny + pz * g.nz;
+      const edge = g.w * (1 + 0.35 * n.simplex(px * 4 + g.freq, py * 4, pz * 4));
+      if (Math.abs(dp) > edge) continue;
+      const band = smoothstep(edge, edge * 0.8, Math.abs(dp));
+      const gr = Math.sin(dp * g.freq * 6 + 2 * n.simplex(px * 12, py * 12, pz * 12));
+      h = h * (1 - 0.6 * band) + band * (g.amp * gr * gr + g.amp * 0.6);
+      if (band > 0.5 && tect < TECT.GROOVES + 1) tect = TECT.GROOVES;
+    }
+
+    // Chaos terrain: the ground breaks into tilted blocks in a lowered matrix.
+    let chaos = featB[i * 4 + 1] / 255;
+    for (const c of plan.chaosList) {
+      const dot = px * c.x + py * c.y + pz * c.z;
+      if (dot < Math.cos(c.r * 1.4)) continue;
+      const ang = Math.acos(Math.min(1, dot));
+      const m = smoothstep(c.r, c.r * 0.7, ang + c.r * 0.25 * n.fbm(px * 10, py * 10, pz * 10, 2));
+      if (m <= 0) continue;
+      const bl = n.simplex(px * 55 + 3.3, py * 55, pz * 55);
+      const block = Math.floor(bl * 3) / 3 + 0.3 * n.ridged(px * 120, py * 120, pz * 120, 2, 2);
+      h = h * (1 - 0.4 * m) + m * (c.amp * (block - 0.4));
+      chaos = Math.max(chaos, m);
+    }
+    let cantaloupe = 0;
+    if (plan.cantaloupe) {
+      const c = plan.cantaloupe;
+      const dot = px * c.x + py * c.y + pz * c.z;
+      if (dot > Math.cos(c.r * 1.2)) {
+        const m = smoothstep(c.r, c.r * 0.75, Math.acos(Math.min(1, dot)) + 0.15 * n.fbm(px * 5, py * 5, pz * 5, 2));
+        const cell = Math.abs(n.simplex(px * 70, py * 70, pz * 70)) + 0.5 * Math.abs(n.simplex(px * 140 + 9, py * 140, pz * 140));
+        h += m * 450 * plan.relief * plan.gRel * (smoothstep(0.0, 0.35, cell) - 0.6);
+        cantaloupe = m;
+      }
+    }
+    // Palimpsests: relaxed flat bright disks with faint rings.
+    let pal = 0;
+    for (const pp of plan.palimpsests) {
+      const dot = px * pp.x + py * pp.y + pz * pp.z;
+      if (dot < Math.cos(pp.r * 1.3)) continue;
+      const xr = Math.acos(Math.min(1, dot)) / pp.r;
+      const m = smoothstep(1.15, 0.9, xr);
+      h = h * (1 - 0.75 * m) + m * (40 * Math.sin(xr * 18) * plan.relief);
+      pal = Math.max(pal, m);
+    }
+
+    height[i] = h;
+    young[i] += late;
+    featA[i * 4 + 2] = tect;
+    if (chaos > 0.5) featB[i * 4 + 1] = clampB(chaos);
+    else if (cantaloupe > 0.5) featB[i * 4 + 1] = 100;
+    if (pal > 0.5 && featA[i * 4 + 3] < 128) featA[i * 4 + 3] = 120;
+  }
+  return { height, young, featA, featB, vkind };
 }
 
 // ---- rasterised features ------------------------------------------------------------------------
@@ -355,17 +355,15 @@ interface Box { x0: number; x1: number; y0: number; y1: number }
 const _box: Box = { x0: 0, x1: 0, y0: 0, y1: 0 };
 
 /** Texel bounding box on `face` of the spherical cap (centre c, angular radius A). Returns false if it misses. */
-function capBox(face: number, N: number, cx: number, cy: number, cz: number, A: number, box: Box): boolean {
+export function capBox(face: number, N: number, cx: number, cy: number, cz: number, A: number, box: Box): boolean {
   const T = N + 2;
   const b = FACE_BASIS[face];
-  const n = b.n, u = b.u, v = b.v;
-  const cn = cx * n[0] + cy * n[1] + cz * n[2];
-  // Face (with gutter) spans < 56° from its centre.
+  const nn = b.n, u = b.u, v = b.v;
+  const cn = cx * nn[0] + cy * nn[1] + cz * nn[2];
   if (Math.acos(Math.max(-1, Math.min(1, cn))) > A + 0.99) return false;
-  // Orthonormal frame around c.
   let ex: number, ey: number, ez: number;
   if (Math.abs(cx) < 0.9) { ex = 0; ey = -cz; ez = cy; } else { ex = cz; ey = 0; ez = -cx; }
-  let l = 1 / Math.hypot(ex, ey, ez);
+  const l = 1 / Math.hypot(ex, ey, ez);
   ex *= l; ey *= l; ez *= l;
   const fx = cy * ez - cz * ey, fy = cz * ex - cx * ez, fz = cx * ey - cy * ex;
   const ca = Math.cos(A), sa = Math.sin(A);
@@ -379,48 +377,62 @@ function capBox(face: number, N: number, cx: number, cy: number, cz: number, A: 
       const co = Math.cos(a) * sa, si = Math.sin(a) * sa;
       px = ca * cx + co * ex + si * fx; py = ca * cy + co * ey + si * fy; pz = ca * cz + co * ez + si * fz;
     }
-    const dn = px * n[0] + py * n[1] + pz * n[2];
+    const dn = px * nn[0] + py * nn[1] + pz * nn[2];
     if (dn <= 0.08) { s0 = -2; s1 = 2; t0 = -2; t1 = 2; break; }
     const su = unwarp((px * u[0] + py * u[1] + pz * u[2]) / dn);
     const sv = unwarp((px * v[0] + py * v[1] + pz * v[2]) / dn);
-    if (su < s0) s0 = su; if (su > s1) s1 = su;
-    if (sv < t0) t0 = sv; if (sv > t1) t1 = sv;
+    if (su < s0) s0 = su;
+    if (su > s1) s1 = su;
+    if (sv < t0) t0 = sv;
+    if (sv > t1) t1 = sv;
   }
+  // Angular padding (bbox from 32 samples of a convex conic can undershoot slightly).
   const pad = 2;
   box.x0 = Math.max(0, Math.floor(((s0 + 1) * 0.5) * N + 0.5) - pad);
   box.x1 = Math.min(T - 1, Math.ceil(((s1 + 1) * 0.5) * N + 0.5) + pad);
   box.y0 = Math.max(0, Math.floor(((t0 + 1) * 0.5) * N + 0.5) - pad);
   box.y1 = Math.min(T - 1, Math.ceil(((t1 + 1) * 0.5) * N + 0.5) + pad);
-  l = 0;
   return box.x0 <= box.x1 && box.y0 <= box.y1;
 }
 
-/** Crater profile at normalised distance x = angle / R (0..EJECTA). Returns height in units of depth. */
+const EJECTA = 2.4;
+
+/** Crater profile at normalised distance x = angle / R. Height in units of depth. */
 export function craterProfile(x: number, rim: number, peak: number, floorFrac: number): number {
   if (x < 1) {
-    // Parabolic bowl rising to the rim, floor flattened for large craters, optional central peak.
     let h = -1 + (1 + rim) * x * x * (0.6 + 0.4 * x);
     if (h < -floorFrac) h = -floorFrac + (h + floorFrac) * 0.15;
     if (peak > 0) h += peak * Math.exp(-(x * x) / 0.018);
     return h;
   }
-  // Ejecta blanket: falls off with ~x^-3, reaching 0 at EJECTA.
   const tail = Math.pow(EJECTA, -3);
   return (rim * (Math.pow(x, -3) - tail)) / (1 - tail);
 }
 
-function rasterCraters(ctx: TerrainContext, face: number, out: Float32Array, dirs: Float32Array): void {
+function rasterCraters(ctx: TerrainContext, face: number, C: Float64Array, out: Float32Array, dirs: Float32Array,
+  featA: Uint8Array, featB: Uint8Array, fresh: boolean): void {
   const N = ctx.N, T = N + 2;
-  const C = ctx.craters;
   const n = ctx.noise;
-  for (let c = 0; c < ctx.craterCount; c++) {
+  const count = C.length / CRATER_STRIDE;
+  const Rkm = ctx.plan.bulk.radiusKm;
+  for (let c = 0; c < count; c++) {
     const o = c * CRATER_STRIDE;
     const cx = C[o], cy = C[o + 1], cz = C[o + 2], R = C[o + 3], D = C[o + 4];
-    const rim = C[o + 5] / D, peak = C[o + 6] / D;
-    const A = R * EJECTA;
+    const rim = C[o + 5], peak = C[o + 6], flag = C[o + 7];
+    const reach = flag === 1 ? 9 : EJECTA;
+    const A = R * reach;
     if (!capBox(face, N, cx, cy, cz, A, _box)) continue;
     const cosA = Math.cos(A);
-    const floorFrac = R * ctx.p.radius / 1000 > 20 ? 0.75 : 1.5;
+    const floorFrac = R * Rkm > 25 ? 0.7 : 1.5;
+    // Tangent frame for ray azimuths.
+    let ex = 0, ey = 0, ez = 0, fx = 0, fy = 0, fz = 0;
+    if (flag === 1) {
+      if (Math.abs(cx) < 0.9) { ex = 0; ey = -cz; ez = cy; } else { ex = cz; ey = 0; ez = -cx; }
+      const l = 1 / Math.hypot(ex, ey, ez);
+      ex *= l; ey *= l; ez *= l;
+      fx = cy * ez - cz * ey; fy = cz * ex - cx * ez; fz = cx * ey - cy * ex;
+    }
+    const ejW = fresh ? 1 : 0.45;
     for (let y = _box.y0; y <= _box.y1; y++) {
       for (let x = _box.x0; x <= _box.x1; x++) {
         const idx = y * T + x;
@@ -428,38 +440,133 @@ function rasterCraters(ctx: TerrainContext, face: number, out: Float32Array, dir
         const dot = dx * cx + dy * cy + dz * cz;
         if (dot <= cosA) continue;
         const ang = Math.acos(Math.min(1, dot));
-        // Slightly irregular rims.
-        const irr = 1 + 0.08 * n.simplex(dx * 40 / (R * 6 + 0.05), dy * 40 / (R * 6 + 0.05), dz * 40 / (R * 6 + 0.05) + c);
-        const xn = ang / (R * irr);
-        if (xn >= EJECTA) continue;
-        out[idx] += D * craterProfile(xn, rim, peak, floorFrac);
+        const xn0 = ang / R;
+        if (xn0 < EJECTA) {
+          const irr = 1 + 0.07 * n.simplex(dx * 7 / R, dy * 7 / R, dz * 7 / R + c);
+          const xn = xn0 / irr;
+          out[idx] += D * craterProfile(xn, rim, peak, floorFrac);
+          if (xn > 0.8 && xn < 2.1) {
+            const e = smoothstep(2.1, 1.0, xn) * ejW;
+            const cur = featA[idx * 4];
+            const v = Math.round(e * 255);
+            if (v > cur) featA[idx * 4] = v;
+          }
+          if (flag === 2 && xn < 0.55) featB[idx * 4 + 3] = 255;
+        }
+        if (flag === 1 && xn0 > 0.7) {
+          const az = Math.atan2(dx * fx + dy * fy + dz * fz, dx * ex + dy * ey + dz * ez);
+          const rn = n.simplex(Math.cos(az) * 9 + c * 1.3, Math.sin(az) * 9, xn0 * 0.08);
+          const ray = smoothstep(0.15, 0.6, rn) * Math.pow(Math.max(0, 1 - xn0 / reach), 1.3) + smoothstep(1.8, 1.0, xn0) * 0.8;
+          const v = Math.min(240, Math.round(ray * 240));
+          if (v > featB[idx * 4 + 3] && featB[idx * 4 + 3] !== 255) featB[idx * 4 + 3] = v;
+        }
       }
     }
   }
 }
 
-function rasterVolcanoes(ctx: TerrainContext, face: number, out: Float32Array, dirs: Float32Array): void {
+function rasterVolcanoes(ctx: TerrainContext, face: number, low: Float32Array, det: Float32Array, dirs: Float32Array,
+  featA: Uint8Array, featB: Uint8Array, vkind: Uint8Array): void {
   const N = ctx.N, T = N + 2;
-  const V = ctx.volcanoes;
   const n = ctx.noise;
-  for (let c = 0; c < ctx.volcanoCount; c++) {
-    const o = c * VOLCANO_STRIDE;
-    const cx = V[o], cy = V[o + 1], cz = V[o + 2], R = V[o + 3], H = V[o + 4], cal = V[o + 5];
-    if (!capBox(face, N, cx, cy, cz, R, _box)) continue;
-    const cosA = Math.cos(R);
+  const plan = ctx.plan;
+  const sulfur = plan.archetype === 'sulfur';
+  for (let c = 0; c < plan.volcanoes.length; c++) {
+    const v = plan.volcanoes[c];
+    const reach = v.style === 'patera' && sulfur ? Math.max(v.flowR, 5) : Math.max(1.05, v.flowR);
+    if (!capBox(face, N, v.x, v.y, v.z, v.r * reach, _box)) continue;
+    const cosA = Math.cos(v.r * reach);
+    // Tangent frame at the vent, for azimuthal flow lobes.
+    let ex = 0, ey = -v.z, ez = v.y;
+    if (Math.abs(v.x) > 0.9) { ex = v.z; ey = 0; ez = -v.x; }
+    const el = 1 / Math.hypot(ex, ey, ez);
+    ex *= el; ey *= el; ez *= el;
+    const fx = v.y * ez - v.z * ey, fy = v.z * ex - v.x * ez, fz = v.x * ey - v.y * ex;
     for (let y = _box.y0; y <= _box.y1; y++) {
       for (let x = _box.x0; x <= _box.x1; x++) {
         const idx = y * T + x;
         const dx = dirs[idx * 3], dy = dirs[idx * 3 + 1], dz = dirs[idx * 3 + 2];
-        const dot = dx * cx + dy * cy + dz * cz;
+        const dot = dx * v.x + dy * v.y + dz * v.z;
         if (dot <= cosA) continue;
-        const xn = Math.acos(Math.min(1, dot)) / R;
-        // Concave shield/strato profile with radial gullies and a summit caldera.
-        let prof = Math.pow(1 - xn, 2.2) * (1 - 0.15 * xn);
-        const gul = n.ridged(dx * 60 + c, dy * 60, dz * 60 - c, 2, 2);
-        prof *= 1 - 0.18 * gul * xn;
-        const calD = smoothstep(cal, cal * 0.6, xn);
-        out[idx] += H * (prof - 0.35 * calD * Math.pow(1 - cal, 2.2));
+        const ang = Math.acos(Math.min(1, dot));
+        const lob = 0.3 * n.fbm(dx * 30 + c, dy * 30, dz * 30 - c, 3);
+        const x0 = ang / v.r;
+        // Lobate flow distance: the apron reaches out in broad tongues (azimuthal noise), with mildly ragged edges.
+        const az = Math.atan2(dx * fx + dy * fy + dz * fz, dx * ex + dy * ey + dz * ez);
+        const tongue = 0.5 + 0.5 * n.simplex(Math.cos(az) * 2.4 + c * 7.1, Math.sin(az) * 2.4, c * 0.37);
+        const xl = x0 / (0.6 + 0.55 * tongue) + 0.12 * n.fbm(dx * 9 + c, dy * 9, dz * 9 - c, 2) * v.flowR;
+        let prof = 0, cover = 0, flow = 0;
+        let kind: number = VK.EDIFICE;
+        switch (v.style) {
+          case 'shield': {
+            const xx = x0 * (1 + 0.08 * lob);
+            prof = xx < 0.88 ? 1 - Math.pow(xx, 1.5) : 0.174 * smoothstep(0.94, 0.88, xx);
+            prof *= 1 - 0.07 * n.ridged(dx * 70 + c, dy * 70, dz * 70, 2, 2) * xx;
+            // Nested summit calderas.
+            prof -= 0.09 * smoothstep(v.caldera, v.caldera * 0.75, x0);
+            prof -= 0.05 * smoothstep(v.caldera * 0.6, v.caldera * 0.4, Math.abs(x0 - v.caldera * 0.5));
+            cover = smoothstep(1.0, 0.85, xx);
+            flow = smoothstep(v.flowR, v.flowR * 0.75, xl) * (xl > 0.8 ? 1 : 0);
+            prof += 0.015 * flow;
+            break;
+          }
+          case 'cone': {
+            prof = Math.pow(Math.max(0, 1 - x0), 1.15) - 0.25 * smoothstep(0.12, 0.08, x0);
+            cover = smoothstep(1.0, 0.8, x0);
+            flow = smoothstep(v.flowR, v.flowR * 0.8, xl) * (xl > 0.7 ? 1 : 0);
+            break;
+          }
+          case 'dome': {
+            prof = Math.pow(Math.max(0, 1 - x0 * x0), 1.6);
+            cover = smoothstep(1.0, 0.7, x0);
+            break;
+          }
+          case 'cryo': {
+            // Steep-sided dome (Ahuna-like, but huge) with a summit pit and broad cryolava lobes.
+            const xx = x0 * (1 + 0.1 * lob);
+            prof = Math.pow(Math.max(0, 1 - Math.pow(xx, 3)), 1.4) * (1 - 0.15 * xx) - 0.12 * smoothstep(v.caldera, v.caldera * 0.6, x0);
+            prof *= 1 - 0.05 * n.ridged(dx * 90, dy * 90 + c, dz * 90, 2, 2) * xx;
+            const lobes = smoothstep(v.flowR, v.flowR * 0.7, xl);
+            flow = lobes * (xx > 0.85 ? 1 : 0);
+            prof += 0.05 * lobes * smoothstep(v.flowR, v.flowR * 0.6, xl);
+            cover = smoothstep(1.0, 0.85, xx);
+            kind = VK.CRYO;
+            break;
+          }
+          case 'patera': {
+            // Caldera depression with a lava-lake floor, low shield, dark lobate flows, plume ring deposits.
+            const cal = v.caldera;
+            const xx = x0 * (1 + 0.15 * lob);
+            if (xx < cal) prof = -1 + 0.05 * smoothstep(cal * 0.85, cal, xx);
+            else if (xx < 1) prof = 0.12 * (1 - xx) + 0.04;
+            else prof = 0.04 * smoothstep(1.2, 1.0, xx);
+            if (xx < cal * 0.8) kind = VK.CALDERA;
+            cover = smoothstep(1.05, 0.9, xx);
+            flow = smoothstep(v.flowR, v.flowR * 0.7, xl);
+            if (sulfur && x0 > 1.3) {
+              const ring = Math.exp(-(((x0 - 3.6) / 0.9) ** 2)) * (0.6 + 0.4 * n.simplex(dx * 20, dy * 20, dz * 20 + c));
+              const rv = Math.round(Math.min(1, ring) * 200);
+              if (rv > featB[idx * 4 + 3] && featB[idx * 4 + 3] !== 255) featB[idx * 4 + 3] = rv;
+            }
+            break;
+          }
+          case 'block': {
+            // Tilted mesa with steep thrust scarps: plateau top, tilted along a random azimuth.
+            const tilt = Math.cos(v.caldera) * (dx - v.x) + Math.sin(v.caldera) * (dz - v.z);
+            const edge = x0 + 0.35 * n.fbm(dx * 18 + c, dy * 18, dz * 18, 3);
+            prof = smoothstep(1.0, 0.8, edge) * (0.65 + 0.35 * (tilt / v.r)) + 0.1 * n.ridged(dx * 60, dy * 60, dz * 60 + c, 3, 2) * smoothstep(1.0, 0.8, edge);
+            cover = smoothstep(1.0, 0.8, edge) * 0.6;
+            kind = VK.BLOCK;
+            break;
+          }
+        }
+        low[idx] += v.h * prof;
+        if (cover > 0) det[idx] *= 1 - cover;
+        const cv = Math.round(Math.min(1, cover) * 255);
+        if (cv > featA[idx * 4 + 1]) { featA[idx * 4 + 1] = cv; if (cover > 0.5) vkind[idx] = kind; }
+        if (kind === VK.CALDERA && x0 < v.caldera * 0.8) vkind[idx] = VK.CALDERA;
+        const fv = Math.round(Math.min(1, flow) * 255);
+        if (fv > featB[idx * 4 + 2]) featB[idx * 4 + 2] = fv;
       }
     }
   }

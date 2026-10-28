@@ -1,35 +1,36 @@
-// Debug renderers: equirectangular and orthographic-globe RGB images from the cube data (pure, no Node APIs).
+// Debug renderers: equirectangular, orthographic globes and gnomonic close-ups from the cube data
+// (pure, no Node APIs). Modes: 'splat' (tinted layer colours), 'units' (geologic map), 'height' (hypsometric).
 
 import { dirToFace, sampleDir, sToTexel } from '../core/cube.ts';
 import type { FaceCoord } from '../core/cube.ts';
 import type { PlanetData } from '../core/types.ts';
-import { BIOMES } from './climate.ts';
+import { GEO_UNITS } from './world.ts';
 
-/** Debug colours per splat layer (index = layer). */
-export const LAYER_COLORS: ReadonlyArray<[number, number, number]> = [
-  [226, 210, 160], // beach_sand
-  [96, 150, 60], // grass
-  [38, 88, 40], // forest
-  [170, 160, 90], // dry_grass
-  [214, 150, 84], // desert
-  [120, 112, 106], // rock
-  [78, 74, 72], // gravel
-  [245, 248, 252], // snow
+/**
+ * Mean linear albedo of the renderer's texture set per splat layer (public/textures/manifest.json):
+ * dust, highland, basalt, sand, rock, gravel, ice, salt. look.layerTints multiply these (linear).
+ */
+export const LAYER_ALBEDO: ReadonlyArray<[number, number, number]> = [
+  [0.213, 0.203, 0.186],
+  [0.315, 0.304, 0.282],
+  [0.068, 0.066, 0.062],
+  [0.339, 0.297, 0.261],
+  [0.124, 0.121, 0.113],
+  [0.163, 0.152, 0.135],
+  [0.617, 0.643, 0.599],
+  [0.58, 0.556, 0.515],
 ];
 
-export type ColorMode = 'biome' | 'splat' | 'height';
+const toSrgb = (v: number) => 255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(Math.min(1, v), 1 / 2.4) - 0.055);
 
-/** Same convention as three.js equirect: u = atan2(z,x)/2π + 0.5, v = asin(y)/π + 0.5, row 0 = +Y. */
-function equirectDir(i: number, j: number, W: number, Hh: number, out: Float64Array): void {
-  const lon = ((i + 0.5) / W - 0.5) * Math.PI * 2;
-  const lat = Math.PI / 2 - ((j + 0.5) / Hh) * Math.PI;
-  out[0] = Math.cos(lat) * Math.cos(lon);
-  out[1] = Math.sin(lat);
-  out[2] = Math.cos(lat) * Math.sin(lon);
-}
+/** Untinted debug colour per splat layer (sRGB 0..255), from LAYER_ALBEDO. */
+export const LAYER_COLORS: ReadonlyArray<[number, number, number]> = LAYER_ALBEDO.map(
+  (c) => [Math.round(toSrgb(c[0])), Math.round(toSrgb(c[1])), Math.round(toSrgb(c[2]))] as [number, number, number],
+);
 
-/** Per-channel float views of the RGBA cubes, so bilinear `sampleDir` can be used per channel. */
-interface Views { splat: Float32Array[]; }
+export type ColorMode = 'splat' | 'units' | 'height';
+
+interface Views { splat: Float32Array[]; cols: [number, number, number][] }
 const _views = new WeakMap<PlanetData, Views>();
 function views(pd: PlanetData): Views {
   let v = _views.get(pd);
@@ -42,7 +43,12 @@ function views(pd: PlanetData): Views {
       for (let i = 0; i < n; i++) a[i] = src[i * 4 + (l & 3)];
       splat.push(a);
     }
-    v = { splat };
+    const tints = pd.info?.look.layerTints;
+    const cols = LAYER_ALBEDO.map((c, l) => {
+      const t = tints?.[l] ?? [1, 1, 1];
+      return [c[0] * t[0], c[1] * t[1], c[2] * t[2]] as [number, number, number];
+    });
+    v = { splat, cols };
     _views.set(pd, v);
   }
   return v;
@@ -58,56 +64,61 @@ function nearestRGBA(data: Uint8Array, N: number, x: number, y: number, z: numbe
   return data[((_fc.face * T + py) * T + px) * 4 + c];
 }
 
-function oceanColor(h: number, maxDepth: number, out: Float64Array): void {
-  const t = Math.min(1, -h / Math.max(1, maxDepth));
-  const s = Math.pow(t, 0.5);
-  out[0] = 40 * (1 - s) + 8 * s;
-  out[1] = 110 * (1 - s) + 24 * s;
-  out[2] = 160 * (1 - s) + 70 * s;
+function hexRgb(h: string): [number, number, number] {
+  const v = parseInt(h.replace('#', ''), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
 }
 
-function hypsoColor(h: number, maxH: number, out: Float64Array): void {
+function seaColor(pd: PlanetData, h: number, out: Float64Array): boolean {
+  const kind = pd.info?.look.seaKind ?? 'none';
+  if (kind === 'none' || h >= 0) return false;
+  const deep = hexRgb(pd.info!.look.seaDeepColor), sh = hexRgb(pd.info!.look.seaShallowColor);
+  const t = Math.min(1, -h / (kind === 'lava' ? 400 : 1500));
+  out[0] = sh[0] + (deep[0] - sh[0]) * t; out[1] = sh[1] + (deep[1] - sh[1]) * t; out[2] = sh[2] + (deep[2] - sh[2]) * t;
+  return true;
+}
+
+function hypsoColor(h: number, lo: number, hi: number, out: Float64Array): void {
   const stops: [number, number, number, number][] = [
-    [0, 70, 120, 60], [0.05, 110, 150, 70], [0.15, 170, 170, 100], [0.3, 160, 130, 90], [0.55, 130, 115, 105], [0.8, 200, 200, 200], [1, 255, 255, 255],
+    [0, 20, 30, 90], [0.25, 40, 110, 160], [0.45, 90, 160, 90], [0.6, 190, 180, 100], [0.8, 160, 100, 60], [1, 255, 255, 255],
   ];
-  const t = Math.max(0, Math.min(1, h / Math.max(1, maxH)));
+  const t = Math.max(0, Math.min(1, (h - lo) / Math.max(1, hi - lo)));
   for (let i = 1; i < stops.length; i++) {
     if (t <= stops[i][0]) {
       const a = stops[i - 1], b = stops[i];
       const k = (t - a[0]) / (b[0] - a[0]);
-      out[0] = a[1] + (b[1] - a[1]) * k;
-      out[1] = a[2] + (b[2] - a[2]) * k;
-      out[2] = a[3] + (b[3] - a[3]) * k;
+      out[0] = a[1] + (b[1] - a[1]) * k; out[1] = a[2] + (b[2] - a[2]) * k; out[2] = a[3] + (b[3] - a[3]) * k;
       return;
     }
   }
 }
 
-function surfaceColor(pd: PlanetData, mode: ColorMode, x: number, y: number, z: number, h: number, out: Float64Array, showOcean: boolean): void {
-  if (h < 0 && showOcean && mode !== 'splat') { oceanColor(h, Math.max(1, -pd.minHeight), out); return; }
-  if (mode === 'height' || (mode === 'biome' && !pd.climate)) { hypsoColor(Math.max(h, 0), pd.maxHeight, out); if (h < 0) { out[0] *= 0.7; out[1] *= 0.7; out[2] *= 0.8; } return; }
-  if (mode === 'biome') {
+/** Returns true when the texel is sea (no hillshade). */
+function surfaceColor(pd: PlanetData, mode: ColorMode, x: number, y: number, z: number, h: number, out: Float64Array): boolean {
+  if (mode === 'height') { hypsoColor(h, pd.minHeight, pd.maxHeight, out); return false; }
+  if (mode === 'units') {
     const id = nearestRGBA(pd.climate, pd.N, x, y, z, 3);
-    const b = BIOMES[Math.max(0, Math.min(BIOMES.length - 1, id))];
-    out[0] = b.color[0]; out[1] = b.color[1]; out[2] = b.color[2];
-    return;
+    const u = GEO_UNITS[id] ?? GEO_UNITS[0];
+    out[0] = u.color[0] * 255; out[1] = u.color[1] * 255; out[2] = u.color[2] * 255;
+    return false;
   }
-  // splat: weighted blend of layer colours.
+  if (seaColor(pd, h, out)) return true;
+  const v = views(pd);
   out[0] = 0; out[1] = 0; out[2] = 0;
   let tot = 0;
-  const sv = views(pd).splat;
   for (let l = 0; l < 8; l++) {
-    const w = sampleDir(sv[l], pd.N, x, y, z);
+    const w = sampleDir(v.splat[l], pd.N, x, y, z);
     tot += w;
-    out[0] += LAYER_COLORS[l][0] * w; out[1] += LAYER_COLORS[l][1] * w; out[2] += LAYER_COLORS[l][2] * w;
+    out[0] += v.cols[l][0] * w; out[1] += v.cols[l][1] * w; out[2] += v.cols[l][2] * w;
   }
   if (tot > 0) { out[0] /= tot; out[1] /= tot; out[2] /= tot; }
-  if (h < 0 && showOcean) { out[0] *= 0.55; out[1] *= 0.65; out[2] *= 0.85; }
+  // Linear albedo -> sRGB, lifted 1.6x so an albedo-0.1 world is still readable in a preview.
+  out[0] = toSrgb(out[0] * 1.6); out[1] = toSrgb(out[1] * 1.6); out[2] = toSrgb(out[2] * 1.6);
+  return false;
 }
 
-/** Lambert hillshade factor from the height gradient around direction d (light from the north-west, high). */
+/** Lambert hillshade factor from the height gradient (light from the north-west, fairly low). */
 function hillshade(pd: PlanetData, x: number, y: number, z: number, step: number, exaggerate: number): number {
-  // Local east/north tangent frame (Y is the spin axis).
   let ex = -z, ez = x;
   const el = Math.hypot(ex, ez) || 1;
   ex /= el; ez /= el;
@@ -120,108 +131,139 @@ function hillshade(pd: PlanetData, x: number, y: number, z: number, step: number
   const dist = 2 * step * pd.radius;
   const gx = ((he - hw) / dist) * exaggerate;
   const gy = ((hn - hs) / dist) * exaggerate;
-  // Normal = (-gx, -gy, 1); light from NW.
-  const lx = -0.5, ly = 0.6, lz = 0.62;
+  const lx = -0.55, ly = 0.55, lz = 0.63;
   const inv = 1 / Math.sqrt(gx * gx + gy * gy + 1);
-  const d = (-gx * lx - gy * ly + lz) * inv;
-  return Math.max(0, d) / lz;
+  return Math.max(0, (-gx * lx - gy * ly + lz) * inv) / lz;
 }
 
 export interface PreviewOptions {
   mode: ColorMode;
-  showOcean?: boolean;
   exaggerate?: number;
-  /** Draw clouds over the surface (0..1 opacity). */
-  clouds?: number;
 }
 
-/** Equirectangular RGB preview (W×H). */
+function equirectDir(i: number, j: number, W: number, Hh: number, out: Float64Array): void {
+  const lon = ((i + 0.5) / W - 0.5) * Math.PI * 2;
+  const lat = Math.PI / 2 - ((j + 0.5) / Hh) * Math.PI;
+  out[0] = Math.cos(lat) * Math.cos(lon);
+  out[1] = Math.sin(lat);
+  out[2] = Math.cos(lat) * Math.sin(lon);
+}
+
+/** Equirectangular RGB preview (three.js equirect convention: u = atan2(z,x)/2π + 0.5, row 0 = +Y). */
 export function renderEquirect(pd: PlanetData, W: number, Hh: number, opt: PreviewOptions): Uint8Array {
   const out = new Uint8Array(W * Hh * 3);
   const d = new Float64Array(3);
   const col = new Float64Array(3);
   const step = (Math.PI / 2) / pd.N * 0.75;
-  const showOcean = opt.showOcean ?? true;
-  const ex = opt.exaggerate ?? 4;
+  const ex = opt.exaggerate ?? 1;
   for (let j = 0; j < Hh; j++) {
     for (let i = 0; i < W; i++) {
       equirectDir(i, j, W, Hh, d);
       const x = d[0], y = d[1], z = d[2];
       const h = sampleDir(pd.height, pd.N, x, y, z);
-      surfaceColor(pd, opt.mode, x, y, z, h, col, showOcean);
-      let shade = 1;
-      if (!(h < 0 && showOcean) || opt.mode === 'splat') shade = 0.35 + 0.65 * hillshade(pd, x, y, z, step, ex);
-      let r = col[0] * shade, g = col[1] * shade, b = col[2] * shade;
-      if (opt.clouds && pd.clouds) {
-        const c = (sampleDir(pd.clouds, pd.cloudN, x, y, z) / 255) * opt.clouds;
-        r += (250 - r) * c; g += (250 - g) * c; b += (252 - b) * c;
-      }
+      const isSea = surfaceColor(pd, opt.mode, x, y, z, h, col);
+      const shade = isSea ? 1 : 0.3 + 0.7 * hillshade(pd, x, y, z, step, ex);
       const o = (j * W + i) * 3;
-      out[o] = Math.min(255, r); out[o + 1] = Math.min(255, g); out[o + 2] = Math.min(255, b);
+      out[o] = Math.min(255, col[0] * shade); out[o + 1] = Math.min(255, col[1] * shade); out[o + 2] = Math.min(255, col[2] * shade);
     }
   }
   return out;
 }
 
-/** Cloud coverage as greyscale over dark blue (equirect). */
-export function renderCloudsEquirect(pd: PlanetData, W: number, Hh: number): Uint8Array {
-  const out = new Uint8Array(W * Hh * 3);
-  const d = new Float64Array(3);
-  for (let j = 0; j < Hh; j++)
-    for (let i = 0; i < W; i++) {
-      equirectDir(i, j, W, Hh, d);
-      const c = sampleDir(pd.clouds, pd.cloudN, d[0], d[1], d[2]) / 255;
-      const o = (j * W + i) * 3;
-      out[o] = 10 + 245 * c; out[o + 1] = 20 + 235 * c; out[o + 2] = 45 + 210 * c;
-    }
-  return out;
-}
-
 /**
- * Two orthographic globe views side by side (size 2S×S), lit by a sun from the upper left,
- * with height-exaggerated shading, ocean and optional clouds. Gives an "from orbit" impression.
+ * Two orthographic globe views side by side (2S×S), sun from the upper left, with the true relief displacing
+ * the silhouette (exaggerated by `exaggerate`) and an atmosphere rim tinted by the look hints.
  */
 export function renderGlobes(pd: PlanetData, S: number, opt: PreviewOptions & { yaw?: number }): Uint8Array {
   const out = new Uint8Array(2 * S * S * 3);
   const col = new Float64Array(3);
   const step = (Math.PI / 2) / pd.N * 0.75;
-  const showOcean = opt.showOcean ?? true;
-  const ex = opt.exaggerate ?? 4;
+  const ex = opt.exaggerate ?? 1;
   const tilt = 0.35;
+  const look = pd.info?.look;
+  const ray = look ? look.rayleigh : [5.8, 13.5, 33.1];
+  const rm = Math.max(ray[0], ray[1], ray[2]);
+  const atmoCol = [255 * (ray[0] / rm) * 0.8 + 50 * Math.min(1, (look?.mie ?? 0) / 20), 255 * (ray[1] / rm) * 0.8 + 40 * Math.min(1, (look?.mie ?? 0) / 20), 255 * (ray[2] / rm)];
+  const atmoK = Math.min(1, 0.25 + 0.6 * (look?.atmoDensity ?? 0.1));
+  // Max relief as a fraction of the radius, to scale the disc so the silhouette fits.
+  const reliefMax = (Math.max(pd.maxHeight, -pd.minHeight) / pd.radius) * ex;
+  const scale = 1 / (1 + reliefMax + 0.04);
   for (let view = 0; view < 2; view++) {
     const yaw = (opt.yaw ?? 0.6) + view * Math.PI;
     const cy = Math.cos(yaw), sy = Math.sin(yaw), ct = Math.cos(tilt), st = Math.sin(tilt);
     for (let j = 0; j < S; j++)
       for (let i = 0; i < S; i++) {
         const o = (j * 2 * S + view * S + i) * 3;
-        const u = ((i + 0.5) / S) * 2 - 1;
-        const v = 1 - ((j + 0.5) / S) * 2;
+        const u = (((i + 0.5) / S) * 2 - 1) / scale;
+        const v = (1 - ((j + 0.5) / S) * 2) / scale;
         const r2 = u * u + v * v;
-        if (r2 >= 1) { out[o] = 4; out[o + 1] = 5; out[o + 2] = 10; continue; }
-        const w = Math.sqrt(1 - r2);
-        // View space (u right, v up, w toward viewer) -> world: tilt about X, then yaw about Y.
-        const vy = v * ct + w * st;
-        const vz = -v * st + w * ct;
-        const x = u * cy + vz * sy;
-        const z = -u * sy + vz * cy;
-        const y = vy;
-        const h = sampleDir(pd.height, pd.N, x, y, z);
-        surfaceColor(pd, opt.mode, x, y, z, h, col, showOcean);
-        // Sun from upper left, in view space.
-        const sun = Math.max(0, (-0.55 * u + 0.5 * v + 0.67 * w));
-        let shade = 0.08 + 0.92 * sun;
-        if (!(h < 0 && showOcean)) shade *= 0.45 + 0.55 * hillshade(pd, x, y, z, step, ex);
-        let r = col[0] * shade, g = col[1] * shade, b = col[2] * shade;
-        if (opt.clouds && pd.clouds) {
-          const c = (sampleDir(pd.clouds, pd.cloudN, x, y, z) / 255) * opt.clouds;
-          const cl = 255 * (0.1 + 0.9 * sun);
-          r += (cl - r) * c; g += (cl - g) * c; b += (cl * 1.02 - b) * c;
+        out[o] = 3; out[o + 1] = 4; out[o + 2] = 9;
+        // Ray-march the relief silhouette along the view ray (orthographic, w toward viewer).
+        const rMax = 1 + reliefMax;
+        if (r2 >= rMax * rMax) {
+          const rr = Math.sqrt(r2);
+          const glow = Math.exp(-(rr - 1) * 40) * atmoK * 0.7;
+          out[o] = Math.min(255, 3 + atmoCol[0] * glow); out[o + 1] = Math.min(255, 4 + atmoCol[1] * glow); out[o + 2] = Math.min(255, 9 + atmoCol[2] * glow);
+          continue;
         }
-        // Thin atmosphere rim.
-        const rim = Math.pow(1 - w, 3) * 0.6;
-        r += (90 - r) * rim * (0.3 + sun); g += (140 - g) * rim * (0.3 + sun); b += (255 - b) * rim * (0.3 + sun);
-        out[o] = Math.min(255, r); out[o + 1] = Math.min(255, g); out[o + 2] = Math.min(255, b);
+        let hit = false, x = 0, y = 0, z = 0, h = 0, w = 0;
+        const wTop = Math.sqrt(Math.max(0, rMax * rMax - r2));
+        const steps = 48;
+        for (let s = 0; s <= steps; s++) {
+          w = wTop - (s / steps) * wTop * 2;
+          const rr = Math.sqrt(r2 + w * w);
+          const vy = (v * ct + w * st) / rr, vz = (-v * st + w * ct) / rr, vx = u / rr;
+          x = vx * cy + vz * sy; z = -vx * sy + vz * cy; y = vy;
+          h = sampleDir(pd.height, pd.N, x, y, z);
+          const surf = 1 + (Math.max(h, look?.seaKind && look.seaKind !== 'none' ? 0 : h) / pd.radius) * ex;
+          if (rr <= surf) { hit = true; break; }
+        }
+        if (!hit) {
+          const rr = Math.sqrt(r2);
+          const glow = Math.exp(-Math.max(0, rr - 1) * 40) * atmoK * 0.7;
+          out[o] = Math.min(255, 3 + atmoCol[0] * glow); out[o + 1] = Math.min(255, 4 + atmoCol[1] * glow); out[o + 2] = Math.min(255, 9 + atmoCol[2] * glow);
+          continue;
+        }
+        const isSea = surfaceColor(pd, opt.mode, x, y, z, h, col);
+        const rr = Math.sqrt(r2 + w * w);
+        const nz = w / rr;
+        const sun = Math.max(0, -0.55 * (u / rr) + 0.5 * (v / rr) + 0.67 * nz);
+        let shade = 0.04 + 0.96 * sun;
+        if (!isSea) shade *= 0.35 + 0.65 * hillshade(pd, x, y, z, step, ex * 2);
+        let r = col[0] * shade, g = col[1] * shade, b = col[2] * shade;
+        if (isSea && look?.seaKind === 'lava') { r = col[0] * 0.9; g = col[1] * 0.7; b = col[2] * 0.6; }
+        const rim = Math.pow(1 - Math.min(1, nz), 2.5) * atmoK;
+        const lit = 0.25 + sun;
+        r += (atmoCol[0] - r) * rim * 0.6 * lit; g += (atmoCol[1] - g) * rim * 0.6 * lit; b += (atmoCol[2] - b) * rim * 0.6 * lit;
+        out[o] = Math.min(255, Math.max(0, r)); out[o + 1] = Math.min(255, Math.max(0, g)); out[o + 2] = Math.min(255, Math.max(0, b));
       }
   }
+  return out;
+}
+
+/** Gnomonic close-up (S×S) centred at lon/lat (degrees, equirect convention) with the given field of view (degrees). */
+export function renderZoom(pd: PlanetData, S: number, lonDeg: number, latDeg: number, fovDeg: number, opt: PreviewOptions): Uint8Array {
+  const out = new Uint8Array(S * S * 3);
+  const col = new Float64Array(3);
+  const lon = (lonDeg * Math.PI) / 180, lat = (latDeg * Math.PI) / 180;
+  const cx = Math.cos(lat) * Math.cos(lon), cy = Math.sin(lat), cz = Math.cos(lat) * Math.sin(lon);
+  let ex = -cz, ez = cx;
+  const el = Math.hypot(ex, ez) || 1;
+  ex /= el; ez /= el;
+  const nx = -ez * cy, ny = ez * cx - ex * cz, nz = ex * cy;
+  const half = Math.tan((fovDeg * Math.PI) / 360);
+  const step = (Math.PI / 2) / pd.N * 0.75;
+  for (let j = 0; j < S; j++)
+    for (let i = 0; i < S; i++) {
+      const u = (((i + 0.5) / S) * 2 - 1) * half, v = (1 - ((j + 0.5) / S) * 2) * half;
+      let x = cx + ex * u + nx * v, y = cy + ny * v, z = cz + ez * u + nz * v;
+      const l = 1 / Math.hypot(x, y, z);
+      x *= l; y *= l; z *= l;
+      const h = sampleDir(pd.height, pd.N, x, y, z);
+      const isSea = surfaceColor(pd, opt.mode, x, y, z, h, col);
+      const shade = isSea ? 1 : 0.25 + 0.75 * hillshade(pd, x, y, z, step, opt.exaggerate ?? 1);
+      const o = (j * S + i) * 3;
+      out[o] = Math.min(255, col[0] * shade); out[o + 1] = Math.min(255, col[1] * shade); out[o + 2] = Math.min(255, col[2] * shade);
+    }
   return out;
 }

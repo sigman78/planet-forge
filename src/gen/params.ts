@@ -1,174 +1,134 @@
-// Generator parameters, UI schema and presets.
-// All knobs are plain numbers/strings so they can be posted to workers and bound to Tweakpane.
+// Generator parameters, UI schema and archetype presets.
+// Every knob is a plain number/string so it can be posted to workers and bound to Tweakpane.
+// Numeric knobs whose schema min is -1 use -1 = AUTO: the value is derived from the archetype + bulk planet.
 
-/** What fills the area below 0 m. The generator treats them all the same; the renderer decides how to draw it. */
-export type SeaKind = 'water' | 'ice' | 'lava' | 'none';
-/** Which splat layer replaces vegetation where `vegetation` < 1 (barren worlds). */
-export type BareGround = 'gravel' | 'desert' | 'rock';
+export type Archetype = 'rust' | 'cinder' | 'grey moon' | 'ice shell' | 'old ice' | 'sulfur' | 'basalt' | 'cryo' | 'wild';
+
+/** Sentinel for "derive from archetype / bulk". */
+export const AUTO = -1;
 
 export interface GenParams {
   // --- general ---
   seed: number;
   /** Interior texels per cube face (128 / 256 / 512 / 1024). */
   resolution: number;
-  /** Sea-level radius in metres. */
-  radius: number;
-  /** How the renderer should treat terrain below 0 m. Ocean coverage still defines the 0 m level for 'none'/'lava'. */
-  seaKind: SeaKind;
+  /** World archetype: sets ranges for the bulk and the default strength of every stage. */
+  archetype: Archetype;
+  /** 0..2: exaggerates volcanoes, basins, canyons and scarps (1 = archetype default). */
+  drama: number;
+  /** Vertical scale multiplier for all relief. */
+  reliefScale: number;
 
-  // --- continents ---
-  /** Area fraction below sea level (0..1). Sea level = this area-weighted height percentile, shifted to exactly 0 m. */
-  oceanCoverage: number;
-  /** Continent noise frequency (higher = more, smaller land masses). */
-  continentFreq: number;
-  /** Domain-warp strength for continents and plate boundaries. */
-  warpStrength: number;
-  /** Number of tectonic plates. */
-  plateCount: number;
-  /** How strongly plate type (continental/oceanic) shapes the continents (0 = pure noise). */
-  plateInfluence: number;
-  /** Width of continental shelves (in continent-noise units, ~0.02..0.12). */
-  shelfWidth: number;
+  // --- bulk planet (-1 = auto from archetype + seed) ---
+  radiusKm: number;
+  /** Iron mass fraction (core). */
+  ironFrac: number;
+  /** Volatile (water/ice/organics) mass fraction. */
+  volatileFrac: number;
+  ageGyr: number;
+  /** Stellar flux relative to Earth. */
+  insolation: number;
+  /** Tidal heating from an eccentric orbit around a giant parent, as a multiple of radiogenic heat. */
+  tidalHeating: number;
 
-  // --- relief ---
-  /** Elevation of the highest peaks in metres (99.99th land percentile before erosion). */
-  maxElevation: number;
-  /** Depth of the deepest trenches in metres (99.9th depth percentile), positive number. */
-  maxDepth: number;
-  /** Mountain ranges along convergent plate boundaries. */
-  mountainStrength: number;
-  /** Ridge sharpness exponent of the ridged multifractal (1 = soft, 3 = knife-edge). */
-  ridgeSharpness: number;
-  /** Mountain belt width (radians of arc). */
-  mountainWidth: number;
-  /** Rolling hills on land. */
-  hills: number;
-  /** Fine detail noise everywhere. */
-  detail: number;
-  /** Raised plateaus with escarpment edges. */
-  plateaus: number;
-  /** Terracing of land (0 = off, 1 = hard steps). */
-  terracing: number;
-  /** Dune fields (ergs) in lowlands. */
+  // --- formation stages (-1 = auto) ---
+  /** Hemispheric crustal dichotomy strength. */
+  dichotomy: number;
+  basinCount: number;
+  /** Largest basin rim radius in radians of arc. */
+  basinSize: number;
+  craterDensity: number;
+  /** Number of volcanoes / paterae. */
+  plumeCount: number;
+  /** Volcano height multiplier (heights already scale with 1/gravity). */
+  volcanoScale: number;
+  /** Broad volcanic rises (Tharsis-like bulges). */
+  riseCount: number;
+  /** Rift / canyon system strength. */
+  riftStrength: number;
+  /** Global-contraction lobate scarps. */
+  scarps: number;
+  /** Ice tectonics: lineae (ridges and cracks) on young shells, grooved bands on old ice. */
+  lineae: number;
+  /** Chaos terrain amount. */
+  chaos: number;
+  /** Flood-basalt area fraction (0..0.6): low basins fill up to this area percentile. */
+  floodLevel: number;
+  /**
+   * Surface liquid/ice volume as global equivalent layer depth (m); the sea level follows from it.
+   * AUTO: the archetype picks a small target coverage instead (rocky worlds: no sea).
+   */
+  seaVolume: number;
+  /** Fluvial erosion strength (droplet erosion). */
+  erosion: number;
   dunes: number;
+  /** Evaporite / sulfur / frost deposit strength. */
+  salt: number;
+  /** Number of fresh rayed craters. */
+  rays: number;
+  polarCaps: number;
 
-  // --- craters / volcanoes ---
-  craterCount: number;
-  /** Largest crater radius as a fraction of planet radius. Sizes follow a power law below it. */
-  craterSize: number;
-  /** Crater depth multiplier. */
-  craterDepth: number;
-  volcanoCount: number;
-  /** Largest volcano base radius as a fraction of planet radius. */
-  volcanoSize: number;
-
-  // --- erosion ---
-  /** Hydraulic droplets per land texel (scales with N², 0 = off). */
+  // --- erosion details ---
+  /** Droplets per land texel at erosion = 1. */
   erosionDroplets: number;
   erosionRate: number;
   depositionRate: number;
-  /** Droplet inertia 0..1 (higher = straighter, longer valleys). */
   inertia: number;
   evaporation: number;
-  /** Sediment capacity factor. */
   capacity: number;
-  /** Erosion brush radius in texels (1..3). */
   brushRadius: number;
-  /** Thermal (talus) erosion iterations. */
   thermalIterations: number;
-  /** Talus angle in degrees: slopes steeper than this slump. */
   talusAngle: number;
 
-  // --- climate ---
-  /** Global temperature offset in °C (0 = Earth-like). */
-  temperatureOffset: number;
-  /** Axial tilt in degrees. More tilt = milder poles, narrower tropics. */
-  axialTilt: number;
-  /** Equator-to-pole temperature drop in °C. */
-  poleCold: number;
-  /** Moisture offset (-1..1). */
-  moisture: number;
-  /** Strength of rain shadows behind mountains (0..1). */
-  rainShadow: number;
-  /** Vegetation multiplier (0 = barren, 1 = Earth-like). */
-  vegetation: number;
-  /** Layer that replaces missing vegetation on barren worlds. */
-  bareGround: BareGround;
-
   // --- materials ---
-  /** Slope in degrees where rock takes over. */
+  /** Slope in degrees where bare rock takes over. */
   rockSlope: number;
-  /** Mean annual temperature (°C) below which snow/ice lies. */
-  snowTemp: number;
-  /** Beach band height above sea level in metres. */
-  beachWidth: number;
-
-  // --- clouds ---
-  cloudCoverage: number;
-  /** Cloud feature scale (higher = smaller cloud cells). */
-  cloudScale: number;
-  /** Number of cyclone swirls. */
-  cyclones: number;
-  /** Interior resolution of the cloud cube. */
-  cloudResolution: number;
 }
 
 export const DEFAULT_PARAMS: GenParams = {
   seed: 42,
   resolution: 512,
-  radius: 800_000,
-  seaKind: 'water',
+  archetype: 'rust',
+  drama: 1,
+  reliefScale: 1,
 
-  oceanCoverage: 0.62,
-  continentFreq: 1.1,
-  warpStrength: 0.9,
-  plateCount: 14,
-  plateInfluence: 0.45,
-  shelfWidth: 0.05,
+  radiusKm: AUTO,
+  ironFrac: AUTO,
+  volatileFrac: AUTO,
+  ageGyr: AUTO,
+  insolation: AUTO,
+  tidalHeating: AUTO,
 
-  maxElevation: 9000,
-  maxDepth: 6000,
-  mountainStrength: 1,
-  ridgeSharpness: 2,
-  mountainWidth: 0.09,
-  hills: 1,
-  detail: 1,
-  plateaus: 0.3,
-  terracing: 0,
-  dunes: 0,
+  dichotomy: AUTO,
+  basinCount: AUTO,
+  basinSize: AUTO,
+  craterDensity: AUTO,
+  plumeCount: AUTO,
+  volcanoScale: AUTO,
+  riseCount: AUTO,
+  riftStrength: AUTO,
+  scarps: AUTO,
+  lineae: AUTO,
+  chaos: AUTO,
+  floodLevel: AUTO,
+  seaVolume: AUTO,
+  erosion: AUTO,
+  dunes: AUTO,
+  salt: AUTO,
+  rays: AUTO,
+  polarCaps: AUTO,
 
-  craterCount: 0,
-  craterSize: 0.12,
-  craterDepth: 1,
-  volcanoCount: 0,
-  volcanoSize: 0.06,
-
-  erosionDroplets: 0.7,
+  erosionDroplets: 0.8,
   erosionRate: 0.3,
   depositionRate: 0.3,
-  inertia: 0.3,
+  inertia: 0.35,
   evaporation: 0.02,
   capacity: 4,
   brushRadius: 2,
-  thermalIterations: 6,
-  talusAngle: 40,
+  thermalIterations: 4,
+  talusAngle: 42,
 
-  temperatureOffset: 0,
-  axialTilt: 23.5,
-  poleCold: 45,
-  moisture: 0,
-  rainShadow: 0.7,
-  vegetation: 1,
-  bareGround: 'gravel',
-
-  rockSlope: 30,
-  snowTemp: -8,
-  beachWidth: 40,
-
-  cloudCoverage: 0.5,
-  cloudScale: 1,
-  cyclones: 4,
-  cloudResolution: 256,
+  rockSlope: 28,
 };
 
 export interface ParamSchemaEntry {
@@ -180,218 +140,121 @@ export interface ParamSchemaEntry {
   step?: number;
   /** Tweakpane-style options: label -> value. */
   options?: Record<string, string | number>;
+  /** True when -1 means "auto" (derived from archetype + bulk). */
+  auto?: boolean;
 }
+
+export const ARCHETYPE_LABELS: Record<Archetype, string> = {
+  rust: 'Rust (Mars-like)',
+  cinder: 'Cinder (Mercury-like)',
+  'grey moon': 'Grey moon (Moon-like)',
+  'ice shell': 'Ice shell (Europa-like)',
+  'old ice': 'Old ice (Callisto-like)',
+  sulfur: 'Sulfur (Io-like)',
+  basalt: 'Basalt (young volcanic)',
+  cryo: 'Cryo (Enceladus/Triton-like)',
+  wild: 'Wild',
+};
+
+const archOptions: Record<string, string> = {};
+for (const [k, v] of Object.entries(ARCHETYPE_LABELS)) archOptions[v] = k;
+
+const auto = (key: keyof GenParams, group: string, label: string, max: number, step: number): ParamSchemaEntry =>
+  ({ key, group, label, min: -1, max, step, auto: true });
 
 export const PARAM_SCHEMA: ParamSchemaEntry[] = [
   { key: 'seed', group: 'General', label: 'Seed', min: 0, max: 99999, step: 1 },
   { key: 'resolution', group: 'General', label: 'Resolution', options: { '128': 128, '256': 256, '512': 512, '1024': 1024 } },
-  { key: 'radius', group: 'General', label: 'Radius (m)', min: 200_000, max: 3_000_000, step: 10_000 },
-  { key: 'seaKind', group: 'General', label: 'Sea', options: { water: 'water', ice: 'ice', lava: 'lava', none: 'none' } },
+  { key: 'archetype', group: 'General', label: 'Archetype', options: archOptions },
+  { key: 'drama', group: 'General', label: 'Drama', min: 0, max: 2, step: 0.01 },
+  { key: 'reliefScale', group: 'General', label: 'Relief scale', min: 0.25, max: 3, step: 0.01 },
 
-  { key: 'oceanCoverage', group: 'Continents', label: 'Ocean coverage', min: 0, max: 0.95, step: 0.01 },
-  { key: 'continentFreq', group: 'Continents', label: 'Continent freq', min: 0.4, max: 4, step: 0.05 },
-  { key: 'warpStrength', group: 'Continents', label: 'Domain warp', min: 0, max: 2.5, step: 0.05 },
-  { key: 'plateCount', group: 'Continents', label: 'Plates', min: 4, max: 40, step: 1 },
-  { key: 'plateInfluence', group: 'Continents', label: 'Plate influence', min: 0, max: 1, step: 0.01 },
-  { key: 'shelfWidth', group: 'Continents', label: 'Shelf width', min: 0.01, max: 0.15, step: 0.005 },
+  auto('radiusKm', 'Bulk', 'Radius (km)', 2000, 5),
+  auto('ironFrac', 'Bulk', 'Iron fraction', 0.8, 0.01),
+  auto('volatileFrac', 'Bulk', 'Volatile fraction', 0.6, 0.005),
+  auto('ageGyr', 'Bulk', 'Age (Gyr)', 10, 0.05),
+  auto('insolation', 'Bulk', 'Insolation (Earth=1)', 12, 0.01),
+  auto('tidalHeating', 'Bulk', 'Tidal heating ×', 80, 0.1),
 
-  { key: 'maxElevation', group: 'Relief', label: 'Max elevation (m)', min: 1000, max: 20000, step: 100 },
-  { key: 'maxDepth', group: 'Relief', label: 'Max depth (m)', min: 200, max: 12000, step: 100 },
-  { key: 'mountainStrength', group: 'Relief', label: 'Mountains', min: 0, max: 2, step: 0.01 },
-  { key: 'ridgeSharpness', group: 'Relief', label: 'Ridge sharpness', min: 0.5, max: 4, step: 0.05 },
-  { key: 'mountainWidth', group: 'Relief', label: 'Mountain width', min: 0.02, max: 0.25, step: 0.005 },
-  { key: 'hills', group: 'Relief', label: 'Hills', min: 0, max: 2, step: 0.01 },
-  { key: 'detail', group: 'Relief', label: 'Detail', min: 0, max: 2, step: 0.01 },
-  { key: 'plateaus', group: 'Relief', label: 'Plateaus', min: 0, max: 1.5, step: 0.01 },
-  { key: 'terracing', group: 'Relief', label: 'Terracing', min: 0, max: 1, step: 0.01 },
-  { key: 'dunes', group: 'Relief', label: 'Dunes', min: 0, max: 2, step: 0.01 },
+  auto('dichotomy', 'Crust & impacts', 'Dichotomy', 2, 0.01),
+  auto('basinCount', 'Crust & impacts', 'Giant basins', 8, 1),
+  auto('basinSize', 'Crust & impacts', 'Basin size (rad)', 0.8, 0.01),
+  auto('craterDensity', 'Crust & impacts', 'Crater density', 3, 0.01),
+  auto('rays', 'Crust & impacts', 'Rayed craters', 30, 1),
 
-  { key: 'craterCount', group: 'Craters', label: 'Craters', min: 0, max: 4000, step: 10 },
-  { key: 'craterSize', group: 'Craters', label: 'Max crater size', min: 0.01, max: 0.4, step: 0.005 },
-  { key: 'craterDepth', group: 'Craters', label: 'Crater depth', min: 0, max: 3, step: 0.01 },
-  { key: 'volcanoCount', group: 'Craters', label: 'Volcanoes', min: 0, max: 200, step: 1 },
-  { key: 'volcanoSize', group: 'Craters', label: 'Max volcano size', min: 0.01, max: 0.2, step: 0.005 },
+  auto('plumeCount', 'Volcanism', 'Volcanoes', 150, 1),
+  auto('volcanoScale', 'Volcanism', 'Volcano scale', 3, 0.01),
+  auto('riseCount', 'Volcanism', 'Volcanic rises', 4, 1),
+  auto('floodLevel', 'Volcanism', 'Flood basalt', 0.6, 0.01),
 
-  { key: 'erosionDroplets', group: 'Erosion', label: 'Droplets / texel', min: 0, max: 4, step: 0.05 },
-  { key: 'erosionRate', group: 'Erosion', label: 'Erosion rate', min: 0, max: 1, step: 0.01 },
-  { key: 'depositionRate', group: 'Erosion', label: 'Deposition rate', min: 0, max: 1, step: 0.01 },
-  { key: 'inertia', group: 'Erosion', label: 'Inertia', min: 0, max: 0.95, step: 0.01 },
-  { key: 'evaporation', group: 'Erosion', label: 'Evaporation', min: 0.001, max: 0.2, step: 0.001 },
-  { key: 'capacity', group: 'Erosion', label: 'Capacity', min: 0.5, max: 16, step: 0.1 },
-  { key: 'brushRadius', group: 'Erosion', label: 'Brush radius', min: 1, max: 3, step: 1 },
-  { key: 'thermalIterations', group: 'Erosion', label: 'Thermal passes', min: 0, max: 30, step: 1 },
-  { key: 'talusAngle', group: 'Erosion', label: 'Talus angle', min: 15, max: 70, step: 1 },
+  auto('riftStrength', 'Tectonics', 'Rifts & canyons', 2, 0.01),
+  auto('scarps', 'Tectonics', 'Lobate scarps', 2, 0.01),
+  auto('lineae', 'Tectonics', 'Lineae / grooves (ice)', 2, 0.01),
+  auto('chaos', 'Tectonics', 'Chaos terrain', 2, 0.01),
 
-  { key: 'temperatureOffset', group: 'Climate', label: 'Temperature (°C)', min: -50, max: 50, step: 0.5 },
-  { key: 'axialTilt', group: 'Climate', label: 'Axial tilt (°)', min: 0, max: 90, step: 0.5 },
-  { key: 'poleCold', group: 'Climate', label: 'Pole cold (°C)', min: 0, max: 90, step: 0.5 },
-  { key: 'moisture', group: 'Climate', label: 'Moisture', min: -1, max: 1, step: 0.01 },
-  { key: 'rainShadow', group: 'Climate', label: 'Rain shadow', min: 0, max: 1, step: 0.01 },
-  { key: 'vegetation', group: 'Climate', label: 'Vegetation', min: 0, max: 1.5, step: 0.01 },
-  { key: 'bareGround', group: 'Climate', label: 'Bare ground', options: { gravel: 'gravel', desert: 'desert', rock: 'rock' } },
+  auto('seaVolume', 'Volatiles', 'Sea volume (m GEL)', 3000, 5),
+  auto('erosion', 'Volatiles', 'Fluvial erosion', 2, 0.01),
+  auto('polarCaps', 'Volatiles', 'Polar caps', 2, 0.01),
+  auto('dunes', 'Volatiles', 'Dunes', 2, 0.01),
+  auto('salt', 'Volatiles', 'Salt / sulfur deposits', 2, 0.01),
+
+  { key: 'erosionDroplets', group: 'Erosion detail', label: 'Droplets / texel', min: 0, max: 4, step: 0.05 },
+  { key: 'erosionRate', group: 'Erosion detail', label: 'Erosion rate', min: 0, max: 1, step: 0.01 },
+  { key: 'depositionRate', group: 'Erosion detail', label: 'Deposition rate', min: 0, max: 1, step: 0.01 },
+  { key: 'inertia', group: 'Erosion detail', label: 'Inertia', min: 0, max: 0.95, step: 0.01 },
+  { key: 'evaporation', group: 'Erosion detail', label: 'Evaporation', min: 0.001, max: 0.2, step: 0.001 },
+  { key: 'capacity', group: 'Erosion detail', label: 'Capacity', min: 0.5, max: 16, step: 0.1 },
+  { key: 'brushRadius', group: 'Erosion detail', label: 'Brush radius', min: 1, max: 3, step: 1 },
+  { key: 'thermalIterations', group: 'Erosion detail', label: 'Thermal passes', min: 0, max: 30, step: 1 },
+  { key: 'talusAngle', group: 'Erosion detail', label: 'Talus angle', min: 15, max: 70, step: 1 },
 
   { key: 'rockSlope', group: 'Materials', label: 'Rock slope (°)', min: 5, max: 60, step: 0.5 },
-  { key: 'snowTemp', group: 'Materials', label: 'Snow line (°C)', min: -30, max: 10, step: 0.5 },
-  { key: 'beachWidth', group: 'Materials', label: 'Beach width (m)', min: 0, max: 300, step: 1 },
-
-  { key: 'cloudCoverage', group: 'Clouds', label: 'Coverage', min: 0, max: 1, step: 0.01 },
-  { key: 'cloudScale', group: 'Clouds', label: 'Scale', min: 0.3, max: 3, step: 0.01 },
-  { key: 'cyclones', group: 'Clouds', label: 'Cyclones', min: 0, max: 12, step: 1 },
-  { key: 'cloudResolution', group: 'Clouds', label: 'Resolution', options: { '128': 128, '256': 256, '512': 512 } },
 ];
 
 /**
- * Named partial parameter sets, applied over DEFAULT_PARAMS (see `resolveParams`).
- * Presets keep the user's seed and resolution: they do not set them.
+ * Archetype presets (partials over DEFAULT_PARAMS). Everything else stays AUTO, so the seed varies the bulk
+ * planet and stage strengths within the archetype's ranges. Presets do not set seed or resolution.
  */
 export const GEN_PRESETS: Record<string, Partial<GenParams>> = {
-  terran: {},
-  archipelago: {
-    oceanCoverage: 0.84,
-    continentFreq: 2.4,
-    warpStrength: 1.2,
-    plateCount: 22,
-    plateInfluence: 0.25,
-    shelfWidth: 0.07,
-    maxElevation: 6000,
-    maxDepth: 5500,
-    mountainStrength: 0.8,
-    volcanoCount: 30,
-    volcanoSize: 0.03,
-    temperatureOffset: 6,
-    moisture: 0.25,
-    cloudCoverage: 0.55,
-  },
-  desert: {
-    oceanCoverage: 0.12,
-    continentFreq: 1.4,
-    maxElevation: 8000,
-    maxDepth: 2500,
-    plateaus: 0.8,
-    terracing: 0.25,
-    dunes: 1.2,
-    erosionDroplets: 0.4,
-    temperatureOffset: 14,
-    poleCold: 35,
-    moisture: -0.65,
-    rainShadow: 0.9,
-    vegetation: 0.25,
-    bareGround: 'desert',
-    beachWidth: 15,
-    cloudCoverage: 0.15,
-    cyclones: 1,
-  },
-  ice: {
-    seaKind: 'ice',
-    oceanCoverage: 0.55,
-    maxElevation: 8000,
-    hills: 0.8,
-    erosionDroplets: 0.5,
-    thermalIterations: 10,
-    temperatureOffset: -32,
-    poleCold: 30,
-    moisture: -0.2,
-    vegetation: 0.3,
-    bareGround: 'gravel',
-    snowTemp: -12,
-    beachWidth: 5,
-    cloudCoverage: 0.45,
-    cyclones: 3,
-  },
-  volcanic: {
-    seaKind: 'lava',
-    oceanCoverage: 0.22,
-    continentFreq: 1.6,
-    warpStrength: 1.4,
-    maxElevation: 12000,
-    maxDepth: 1500,
-    mountainStrength: 1.3,
-    ridgeSharpness: 2.6,
-    plateaus: 0.5,
-    volcanoCount: 60,
-    volcanoSize: 0.08,
-    craterCount: 60,
-    craterSize: 0.05,
-    erosionDroplets: 0.25,
-    thermalIterations: 12,
-    temperatureOffset: 35,
-    moisture: -0.9,
-    vegetation: 0,
-    bareGround: 'gravel',
-    rockSlope: 22,
-    beachWidth: 0,
-    cloudCoverage: 0.3,
-    cyclones: 0,
-  },
-  moon: {
-    seaKind: 'none',
-    oceanCoverage: 0.5,
-    continentFreq: 0.8,
-    warpStrength: 0.6,
-    plateInfluence: 0,
-    maxElevation: 7000,
-    maxDepth: 7000,
-    mountainStrength: 0.15,
-    hills: 0.5,
-    plateaus: 0,
-    craterCount: 1800,
-    craterSize: 0.22,
-    craterDepth: 1.2,
-    erosionDroplets: 0,
-    thermalIterations: 4,
-    temperatureOffset: -20,
-    moisture: -1,
-    vegetation: 0,
-    bareGround: 'gravel',
-    rockSlope: 26,
-    snowTemp: -100,
-    beachWidth: 0,
-    cloudCoverage: 0,
-    cyclones: 0,
-  },
-  alien: {
-    oceanCoverage: 0.38,
-    continentFreq: 1.8,
-    warpStrength: 2.2,
-    plateCount: 9,
-    plateInfluence: 0.6,
-    maxElevation: 14000,
-    maxDepth: 8000,
-    mountainStrength: 1.6,
-    ridgeSharpness: 3.4,
-    mountainWidth: 0.05,
-    plateaus: 1.3,
-    terracing: 0.75,
-    erosionDroplets: 1.0,
-    inertia: 0.6,
-    axialTilt: 60,
-    temperatureOffset: 12,
-    moisture: 0.6,
-    vegetation: 1.4,
-    rockSlope: 38,
-    cloudCoverage: 0.65,
-    cloudScale: 1.8,
-    cyclones: 9,
-  },
+  rust: { archetype: 'rust' },
+  cinder: { archetype: 'cinder' },
+  'grey moon': { archetype: 'grey moon' },
+  'ice shell': { archetype: 'ice shell' },
+  'old ice': { archetype: 'old ice' },
+  sulfur: { archetype: 'sulfur' },
+  basalt: { archetype: 'basalt' },
+  cryo: { archetype: 'cryo' },
+  wild: { archetype: 'wild', drama: 1.5 },
 };
 
-/** Merge a partial over the defaults and clamp the values that would break the pipeline. */
+/** Archetype families, for grouping in the UI. */
+export const ARCHETYPE_FAMILIES: Record<string, Archetype[]> = {
+  rocky: ['rust', 'cinder', 'grey moon'],
+  ice: ['ice shell', 'old ice'],
+  volcanic: ['sulfur', 'basalt'],
+  cryovolcanic: ['cryo'],
+  random: ['wild'],
+};
+
+/** Merge a partial over the defaults and sanitise values that would break the pipeline. */
 export function resolveParams(p: Partial<GenParams> = {}): GenParams {
   const r: GenParams = { ...DEFAULT_PARAMS, ...p };
   r.seed = Math.floor(r.seed) >>> 0;
   r.resolution = Math.max(8, Math.floor(r.resolution));
-  r.cloudResolution = Math.max(8, Math.floor(r.cloudResolution));
-  r.oceanCoverage = Math.min(0.99, Math.max(0.01, r.oceanCoverage));
-  r.plateCount = Math.max(2, Math.floor(r.plateCount));
+  if (!(r.archetype in ARCHETYPE_LABELS)) r.archetype = 'rust';
   r.brushRadius = Math.min(3, Math.max(1, Math.round(r.brushRadius)));
-  r.craterCount = Math.max(0, Math.floor(r.craterCount));
-  r.volcanoCount = Math.max(0, Math.floor(r.volcanoCount));
-  r.cyclones = Math.max(0, Math.floor(r.cyclones));
   r.thermalIterations = Math.max(0, Math.floor(r.thermalIterations));
+  r.drama = Math.max(0, r.drama);
+  r.reliefScale = Math.max(0.05, r.reliefScale);
   return r;
 }
 
 /** Preset by name merged over defaults; `overrides` (e.g. seed, resolution) win. */
 export function presetParams(name: string, overrides: Partial<GenParams> = {}): GenParams {
   return resolveParams({ ...(GEN_PRESETS[name] ?? {}), ...overrides });
+}
+
+/** `v` unless it is AUTO (< 0), else `fallback`. */
+export function pick(v: number, fallback: number): number {
+  return v >= 0 ? v : fallback;
 }

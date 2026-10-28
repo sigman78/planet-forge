@@ -3,7 +3,6 @@
 
 import { dirToFace, faceToDir, sToTexel, texelToS, warp } from '../core/cube.ts';
 import type { FaceCoord, Vec3 } from '../core/cube.ts';
-import type { GenParams } from './params.ts';
 
 /** Relative solid angle of each texel of a face (T×T, identical for all faces). Interior texels sum to 4π/6. */
 export function texelAreaWeights(N: number): Float32Array {
@@ -95,22 +94,6 @@ export function shiftToSeaLevel(height: Float32Array, N: number, coverage: numbe
   const [sea] = weightedQuantiles(height, N, [coverage], -Infinity, Infinity, areaW);
   for (let i = 0; i < height.length; i++) height[i] -= sea;
   return sea;
-}
-
-/**
- * Raw terrain (≈ km) -> metres relative to sea level. Sea level is the ocean-coverage percentile.
- * Land is scaled so its 99.99th percentile = maxElevation, sea floor so its 99.9th depth percentile = maxDepth.
- */
-export function normalizeHeights(height: Float32Array, N: number, p: GenParams, areaW?: Float32Array): void {
-  shiftToSeaLevel(height, N, p.oceanCoverage, areaW);
-  const [landTop] = weightedQuantiles(height, N, [0.9999], 0, Infinity, areaW);
-  const [deepest] = weightedQuantiles(height, N, [0.001], -Infinity, 0, areaW);
-  const ls = landTop > 1e-6 ? p.maxElevation / landTop : 1000;
-  const os = deepest < -1e-6 ? p.maxDepth / -deepest : 1000;
-  for (let i = 0; i < height.length; i++) {
-    const v = height[i];
-    height[i] = v > 0 ? v * ls : v * os;
-  }
 }
 
 /**
