@@ -166,12 +166,16 @@ void main() {
   Nm = normalize(mix(n, Nm, uMacroNormal));
 
   vec3 tc = cubeTexCoord(n, uN);
-  float hM = texture(tHeight, tc).r;
-  vec4 climate = texture(tClimate, tc);
+  // Mip level from the continuous direction, not from tc: tc jumps at cube-face edges, and implicit
+  // derivatives there would select the coarsest mip and draw a one-pixel seam along every edge.
+  float texPerPx = max(length(dFdx(vDir)), length(dFdy(vDir))) * uN * 0.63662;  // N texels per pi/2
+  float dataLod = log2(max(texPerPx, 1e-6));
+  float hM = textureLod(tHeight, tc, 0.0).r;
+  vec4 climate = textureLod(tClimate, tc, dataLod);
 
   // --- Splat: pick the 4 strongest layers ---------------------------------------------------------
-  vec4 s0 = texture(tSplat0, tc);
-  vec4 s1 = texture(tSplat1, tc);
+  vec4 s0 = textureLod(tSplat0, tc, dataLod);
+  vec4 s1 = textureLod(tSplat1, tc, dataLod);
   float w[LAYERS];
   w[0] = s0.r; w[1] = s0.g; w[2] = s0.b; w[3] = s0.a;
   w[4] = s1.r; w[5] = s1.g; w[6] = s1.b; w[7] = s1.a;

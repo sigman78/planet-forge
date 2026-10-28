@@ -65,8 +65,10 @@ export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams) {
   env.atmoHeight = h.atmoHeightKm;
   env.rayleigh = { x: h.rayleigh[0], y: h.rayleigh[1], z: h.rayleigh[2] };
   env.mie = h.mie;
-  env.mieH = h.mieH;
-  env.rayleighH = h.rayleighH;
+  // The ray march stops at the shell top: keep scale heights well below it so density
+  // fades out smoothly instead of ending in a hard-edged shell.
+  env.rayleighH = Math.min(h.rayleighH, h.atmoHeightKm / 5);
+  env.mieH = Math.min(h.mieH, h.atmoHeightKm / 7);
   look.oceanMode = SEA_MODE[h.seaKind] ?? 3;
   look.deepColor = h.seaDeepColor;
   look.shallowColor = h.seaShallowColor;
@@ -77,14 +79,11 @@ export const ARCHETYPE_LABELS: Record<string, string> = {
   rust: 'Rust',
   cinder: 'Cinder',
   'grey moon': 'Grey moon',
-  greyMoon: 'Grey moon',
-  moon: 'Grey moon',
-  sulfur: 'Sulfur',
   'ice shell': 'Ice shell',
-  iceShell: 'Ice shell',
-  'shallow sea': 'Shallow sea',
-  shallowSea: 'Shallow sea',
-  haze: 'Haze',
+  'old ice': 'Old ice',
+  sulfur: 'Sulfur',
+  basalt: 'Basalt',
+  cryo: 'Cryovolcanic',
   wild: 'Wild',
 };
 

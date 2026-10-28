@@ -111,6 +111,7 @@ export class PlanetView {
   data: PlanetData | null = null;
   private tex: PlanetTextures | null = null;
   private meshSegments = 0;
+  private geoCache = new Map<number, THREE.BufferGeometry>();
   private placeholder: THREE.DataArrayTexture;
 
   constructor(
@@ -203,8 +204,38 @@ export class PlanetView {
   setMeshSegments(segments: number) {
     if (segments === this.meshSegments) return;
     this.meshSegments = segments;
-    this.terrain.geometry.dispose();
-    this.terrain.geometry = createCubeSphereGeometry(segments);
+    let g = this.geoCache.get(segments);
+    if (!g) {
+      g = createCubeSphereGeometry(segments);
+      this.geoCache.set(segments, g);
+    }
+    this.terrain.geometry = g;
+  }
+
+  /**
+   * Pick the mesh density from how big the ground near the camera appears on screen: about
+   * `pxPerQuad` pixels per quad. Pixel-sized triangles are very slow on GPUs (2x2 quad shading),
+   * and the fragment shader already carries all detail finer than the mesh.
+   */
+  autoMeshSegments(camera: THREE.PerspectiveCamera, viewportHeightPx: number, altitudeKm: number, pxPerQuad = 5, maxSegments = 384) {
+    const R = this.shared.uPlanetRadius.value;
+    const pxPerKm = viewportHeightPx / (2 * Math.max(altitudeKm, 1) * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+    const want = (R * Math.PI * 0.5 * pxPerKm) / pxPerQuad;
+    const buckets = [96, 128, 192, 256, 384, 512, 768].filter((b) => b <= maxSegments);
+    let pick = buckets[buckets.length - 1];
+    for (const b of buckets) {
+      if (b >= want) {
+        pick = b;
+        break;
+      }
+    }
+    // Hysteresis: only step down once the coarser level is clearly enough.
+    if (pick < this.meshSegments && want > this.meshSegments * 0.8) return;
+    this.setMeshSegments(pick);
+  }
+
+  get segments() {
+    return this.meshSegments;
   }
 
   setPlanet(data: PlanetData) {

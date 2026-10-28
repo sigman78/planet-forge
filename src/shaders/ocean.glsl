@@ -65,7 +65,7 @@ void main() {
   gDpdx = dFdx(vWorldPos);
   gDpdy = dFdy(vWorldPos);
   vec3 n = normalize(vDir);
-  float h = texture(tHeight, cubeTexCoord(n, uN)).r;   // seabed elevation, metres (negative under water)
+  float h = textureLod(tHeight, cubeTexCoord(n, uN), 0.0).r;   // seabed elevation, metres (negative under water)
   float depth = -h;
   if (depth < -2.0) discard;
 

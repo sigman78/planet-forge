@@ -42,7 +42,7 @@ async function main() {
     preset: archetypes[0] ?? 'default',
     autoRegen: true,
     autoLook: true,
-    meshSegments: 384,
+    meshSegments: 0, // 0 = auto (by on-screen size)
     hideUi: false,
   };
   let gen: GenParams = presetParams(state.preset, { seed: Math.floor(Math.random() * 100000), resolution: DEFAULT_PARAMS.resolution });
@@ -59,7 +59,7 @@ async function main() {
   ]);
 
   const view = new PlanetView(renderer, shared, layers);
-  view.setMeshSegments(state.meshSegments);
+  view.setMeshSegments(state.meshSegments || 192);
   scene.add(view.group);
 
   const pipeline = new Pipeline(renderer, scene, camera, shared);
@@ -129,7 +129,15 @@ async function main() {
       });
       if (ac.signal.aborted) return;
       view.setPlanet(planet);
-      controller.radius = planet.radius / 1000;
+      const R = planet.radius / 1000;
+      const prevR = controller.radius;
+      controller.radius = R;
+      controller.maxAltitude = R * 14;
+      // Small bodies vary a lot in size: reframe when the radius changes noticeably.
+      if (!framed || Math.abs(R - prevR) / prevR > 0.15) {
+        controller.setView({ altitude: R * 2.6 }, !framed);
+        framed = true;
+      }
       if (state.autoLook && planet.info) applyLookHints(planet.info.look, env, look);
       applyEnv();
       applyLook();
@@ -144,6 +152,7 @@ async function main() {
     }
     if (abort === ac) progressEl.classList.remove('on');
   }
+  let framed = false;
   function scheduleRegen() {
     if (!state.autoRegen) return;
     clearTimeout(regenTimer);
@@ -304,8 +313,8 @@ async function main() {
   tDebug.addBinding(look, 'debug', { label: 'view', options: DEBUG_VIEWS });
   tDebug.addBinding(look, 'wireframe');
   tDebug
-    .addBinding(state, 'meshSegments', { label: 'mesh / face', options: { '128': 128, '256': 256, '384': 384, '512': 512, '768': 768 } })
-    .on('change', () => view.setMeshSegments(state.meshSegments));
+    .addBinding(state, 'meshSegments', { label: 'mesh / face', options: { auto: 0, '128': 128, '256': 256, '384': 384, '512': 512, '768': 768 } })
+    .on('change', () => state.meshSegments && view.setMeshSegments(state.meshSegments));
   const camInfo = { text: '' };
   tDebug.addBinding(camInfo, 'text', { label: 'camera', readonly: true, multiline: true, rows: 3, interval: 250 });
   tDebug.addButton({ title: 'Screenshot (PNG)' }).on('click', () => {
@@ -349,7 +358,7 @@ async function main() {
   // ---- Boot ------------------------------------------------------------------------------------
   rebuildGenPane();
   loadPreset(state.preset);
-  controller.setView({ altitude: 3200, lat: 0.3, lon: 0.4 }, true);
+  controller.setView({ altitude: 1300, lat: 0.3, lon: 0.4 }, true);
   boot.classList.add('done');
 
   const timer = new THREE.Timer();
@@ -372,6 +381,7 @@ async function main() {
     shared.uTime.value = time;
     controller.update(dt);
     sky.update(camera, renderer.getPixelRatio());
+    if (!state.meshSegments) view.autoMeshSegments(camera, renderer.domElement.height, controller.altitude);
     view.updateFootprint(camera, renderer.domElement.height);
     camInfo.text = `alt ${controller.altitude.toFixed(1)} km\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
     pipeline.render(dt);
