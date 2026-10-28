@@ -13,6 +13,7 @@ uniform float uFineDetail;           // strength of the sub-mesh detail octaves 
 uniform vec4  uLayerStyle[LAYERS];
 uniform float uFinePits;             // scale of the pitted fine style (low on worlds with an atmosphere)   // fine detail style per layer (ridged, billowy, cracked, pitted)
 uniform sampler2DArray tAO;          // heightmap ambient occlusion (R)
+uniform sampler2DArray tGrad;        // baked height gradient (m per km, world space)
 uniform float uShadows;              // cast-shadow strength (0 = off)
 uniform float uTerrainAO;            // heightmap AO strength
 uniform vec3  uLayerTint[LAYERS];
@@ -238,22 +239,19 @@ void main() {
   gDetailFootprint = sqrt(fpA * fpB);
   gTileMix = uAntiTile;
 
-  // --- Macro normal from the height texture -----------------------------------------------------
-  vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-  vec3 t1 = normalize(cross(up, n));
-  vec3 t2 = cross(n, t1);
-  // Finite-difference step: one heightmap texel, or the pixel footprint when that is larger (avoids aliasing).
-  float e = max(1.5707963 / uN * 0.75, gFootprint / uRadius);
-  vec3 dx = surfPosBaked(normalize(n + t1 * e)) - surfPosBaked(normalize(n - t1 * e));
-  vec3 dy = surfPosBaked(normalize(n + t2 * e)) - surfPosBaked(normalize(n - t2 * e));
-  vec3 Nm = normalize(cross(dx, dy));
-
   vec3 tc = cubeTexCoord(n, uN);
   // Mip level from the continuous direction, not from tc: tc jumps at cube-face edges, and implicit
   // derivatives there would select the coarsest mip and draw a one-pixel seam along every edge.
   float texPerPx = max(length(dFdx(vDir)), length(dFdy(vDir))) * uN * 0.63662;  // N texels per pi/2
   float dataLod = log2(max(texPerPx, 1e-6));
   float hM = textureLod(tHeight, tc, 0.0).r;
+
+  // --- Macro normal from the baked height gradient ---------------------------------------------------
+  // Per-texel gradients filter smoothly (bilinear finite differences of heights are faceted per texel) and
+  // their mips average slopes instead of aliasing from orbit. Below the datum the sea-floor scale applies.
+  vec3 Gh = textureLod(tGrad, tc, dataLod).xyz * uHeightScale * mix(uSeaFloorScale, 1.0, smoothstep(-40.0, 40.0, hM));
+  Gh -= dot(Gh, n) * n;
+  vec3 Nm = normalize(n - Gh);
   vec4 climate = textureLod(tClimate, tc, dataLod);
 
   // --- Splat: pick the NLAY strongest layers ---------------------------------------------------------

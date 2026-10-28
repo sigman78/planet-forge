@@ -201,6 +201,8 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
   const hasRifts = plan.rifts.length > 0;
   // Linear features never get narrower than a few texels (sub-texel lines alias into dotted dashes).
   const tex = Math.PI / 2 / N;
+  // Wall width as a fraction of the half-width, by rift kind (canyon, graben).
+  const WALL_FRAC = [0.45, 0.4];
   for (let i = 0; i < TT; i++) {
     const px = dirs[i * 3], py = dirs[i * 3 + 1], pz = dirs[i * 3 + 2];
     let h = low[i] + det[i];
@@ -227,17 +229,20 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
         if (taper <= 0) continue;
         const wv = Math.max(minW, rw * (0.75 + 0.5 * (0.5 + 0.5 * n.simplex(along * 7 + k * 3.1, k * 1.7, 0.5))));
         const u = Math.abs(dp) / wv;
+        // Walls are never steeper than ~1.6 texels across: a sub-texel wall aliases into a staircase rim, a
+        // jagged shadow edge and per-texel rock spots along the trough. Narrow troughs become V-shaped instead.
+        const wallU = Math.max(WALL_FRAC[r.kind] ?? 0.4, (1.6 * tex) / wv);
         if (r.kind === 0) {
           // Canyon: steep layered walls, flat floor, slightly raised shoulders.
-          let wall = 1 - smoothstep(0.55, 1.0, u);
-          const nl = Math.max(1, Math.min(5, Math.floor((0.45 * wv) / (1.5 * tex))));
+          let wall = 1 - smoothstep(1 - wallU, 1.0, u);
+          const nl = Math.max(1, Math.min(5, Math.floor((wallU * wv) / (2 * tex))));
           const lay = wall * nl;
           wall = (Math.floor(lay) + smoothstep(0.2, 0.8, lay - Math.floor(lay))) / nl;
           late -= r.depth * taper * wall;
           late += r.depth * 0.04 * taper * Math.exp(-(((u - 1.3) / 0.3) ** 2));
           if (u < 1.1 * taper + 0.05 && taper > 0.2) tect = TECT.CANYON;
         } else if (r.kind === 1) {
-          late -= r.depth * taper * (1 - smoothstep(0.6, 1.0, u));
+          late -= r.depth * taper * (1 - smoothstep(1 - wallU, 1.0, u));
           if (u < 1 && taper > 0.3 && tect < TECT.FOSSAE) tect = TECT.FOSSAE;
         } else {
           // Fissure with flanking ridges.

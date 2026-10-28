@@ -195,6 +195,7 @@ export class PlanetView {
       tSplat1: u<THREE.Texture>(this.placeholder),
       tClimate: u<THREE.Texture>(this.placeholder),
       tAO: u<THREE.Texture>(this.placeholder),
+      tGrad: u<THREE.Texture>(this.placeholder),
       uN: u(1),
       uRadius: shared.uPlanetRadius,
       uHeightScale: u(0.001),
@@ -325,6 +326,7 @@ export class PlanetView {
     U.tSplat1.value = this.tex.splat1;
     U.tClimate.value = this.tex.climate;
     U.tAO.value = this.tex.ao;
+    U.tGrad.value = this.tex.grad;
     U.uN.value = data.N;
     this.figureM = computeFigureM(data);
     this.coverage = layerCoverage(data);
