@@ -5,6 +5,9 @@ import { sampleDir } from './core/cube.ts';
 import type { PlanetData } from './core/types.ts';
 import { DEFAULT_PARAMS, GEN_PRESETS, PARAM_SCHEMA, presetParams, type GenParams } from './gen/params.ts';
 import { generate } from './app/generate.ts';
+import { loadCached, storeCached, clearCache } from './app/cache.ts';
+import { Hologram } from './render/hologram.ts';
+import { Captions } from './app/captions.ts';
 import { DEFAULT_ENV, applyLookHints, archetypeLabel, planetName, MIN_ATMO_DENSITY, type EnvParams } from './app/presets.ts';
 import { download, exportPlanet } from './app/export.ts';
 import { loadTerrainTextures } from './render/terrainTextures.ts';
@@ -42,25 +45,53 @@ async function main() {
     preset: archetypes[0] ?? 'default',
     autoRegen: true,
     autoLook: true,
+    cache: true, // reuse planets stored in IndexedDB (production builds)
     meshSegments: 0, // 0 = auto (by on-screen size)
     hideUi: false,
   };
-  let gen: GenParams = presetParams(state.preset, { seed: Math.floor(Math.random() * 100000), resolution: DEFAULT_PARAMS.resolution });
+  // Shareable worlds: #<archetype>/<seed> in the URL.
+  const fromHash = /^#([^/]+)\/(\d+)$/.exec(location.hash);
+  const hashPreset = fromHash ? decodeURIComponent(fromHash[1]) : '';
+  if (hashPreset && GEN_PRESETS[hashPreset]) state.preset = hashPreset;
+  const initialSeed = fromHash && GEN_PRESETS[hashPreset] ? Number(fromHash[2]) : Math.floor(Math.random() * 100000);
+  let gen: GenParams = presetParams(state.preset, { seed: initialSeed, resolution: DEFAULT_PARAMS.resolution });
   const look: LookParams = { ...DEFAULT_LOOK };
   const env: EnvParams = structuredClone(DEFAULT_ENV);
 
   // ---- Assets ----------------------------------------------------------------------------------
+  // No loading screen: the forging hologram spins up right away and stays until the first world is ready.
   const boot = $('boot');
-  boot.textContent = 'LOADING MATERIALS…';
+  boot.classList.add('done');
   const shared = createSharedUniforms();
+  const holo = new Hologram(shared.uSunDir);
+  {
+    const s0 = new THREE.Scene();
+    s0.add(holo.mesh);
+    camera.position.set(0, 350, 1900);
+    camera.lookAt(0, 0, 0);
+    holo.begin(600, gen.seed);
+    const t0 = performance.now();
+    let last = t0;
+    renderer.setAnimationLoop(() => {
+      const now = performance.now();
+      holo.update(Math.min((now - last) / 1000, 0.1), (now - t0) / 1000);
+      last = now;
+      renderer.render(s0, camera);
+    });
+  }
   const [layers, sky] = await Promise.all([
-    loadTerrainTextures(renderer, `${import.meta.env.BASE_URL}textures/`, undefined, (f) => (boot.textContent = `LOADING MATERIALS ${Math.round(f * 100)}%`)),
+    loadTerrainTextures(renderer, `${import.meta.env.BASE_URL}textures/`),
     createSky(scene, shared),
   ]);
 
   const view = new PlanetView(renderer, shared, layers);
   view.setMeshSegments(state.meshSegments || 192);
   scene.add(view.group);
+  scene.add(holo.mesh);
+  // Nothing to show until the first world is forged (the hologram stands in).
+  view.group.visible = false;
+  shared.uAtmoDensity.value = 0;
+  shared.uHaze.value = 0;
 
   const pipeline = new Pipeline(renderer, scene, camera, shared);
   const controller = new PlanetCameraController(camera, renderer.domElement);
@@ -112,6 +143,11 @@ async function main() {
     camera.updateProjectionMatrix();
     controller.autoRotate = env.autoRotate;
     controller.autoTilt = env.autoTilt;
+    // While the hologram stands in for the world there is no atmosphere around it.
+    if (!view.group.visible) {
+      shared.uAtmoDensity.value = 0;
+      shared.uHaze.value = 0;
+    }
   }
   function applyLook() {
     view.applyLook(look);
@@ -120,24 +156,51 @@ async function main() {
   // ---- Generation ------------------------------------------------------------------------------
   let abort: AbortController | null = null;
   let regenTimer = 0;
-  const progressEl = $('progress');
-  async function regenerate() {
+  const captions = new Captions($('captions'));
+  /** overlay: keep the current world on screen under a faint hologram (live slider tweaks). */
+  async function regenerate(overlay = false) {
     abort?.abort();
     const ac = new AbortController();
     abort = ac;
-    progressEl.classList.add('on');
+    captions.stop();
     const t0 = performance.now();
+    const params = structuredClone(gen);
     try {
-      const planet = await generate(gen, {
-        signal: ac.signal,
-        onProgress: (stage, frac) => {
-          if (ac.signal.aborted) return;
-          $('plabel').textContent = stage.toUpperCase();
-          ($('pfill') as HTMLElement).style.width = `${Math.round(frac * 100)}%`;
-        },
-      });
+      // Planets are cached in IndexedDB by parameters + generator version (not in dev: the generator changes).
+      const useCache = state.cache && !import.meta.env.DEV;
+      let planet = useCache ? await loadCached(params) : null;
+      const cached = !!planet;
       if (ac.signal.aborted) return;
+      if (!planet) {
+        // Forging takes seconds: swap the old world for the hologram unless it finishes very quickly.
+        const holoTimer = window.setTimeout(() => {
+          if (ac.signal.aborted) return;
+          const swap = !overlay || !view.data;
+          holo.begin(controller.radius, params.seed, !swap);
+          if (swap) {
+            view.group.visible = false;
+            shared.uAtmoDensity.value = 0;
+            shared.uHaze.value = 0;
+          }
+        }, 150);
+        try {
+          planet = await generate(params, {
+            signal: ac.signal,
+            onProgress: (_stage, frac) => {
+              if (!ac.signal.aborted) holo.setProgress(frac);
+            },
+          });
+        } finally {
+          clearTimeout(holoTimer);
+        }
+        if (useCache && !ac.signal.aborted) void storeCached(params, planet);
+      }
+      if (ac.signal.aborted) return;
+      lastFromCache = cached;
+      history.replaceState(null, '', `#${encodeURIComponent(state.preset)}/${params.seed}`);
       view.setPlanet(planet);
+      view.group.visible = true;
+      holo.finish(planet.radius / 1000);
       const R = planet.radius / 1000;
       const prevR = controller.radius;
       controller.radius = R;
@@ -147,7 +210,7 @@ async function main() {
         controller.setView({ altitude: R * 2.6 }, !framed);
         framed = true;
       }
-      if (state.autoLook && planet.info) applyLookHints(planet.info.look, env, look, planet.info.bulk);
+      if (state.autoLook && planet.info) applyLookHints(planet.info.look, env, look, planet.info.bulk, planet.info.archetype, gen.seed);
       applyEnv();
       applyLook();
       pane.refresh();
@@ -155,17 +218,20 @@ async function main() {
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
         console.error(e);
-        $('plabel').textContent = 'GENERATION FAILED: ' + (e as Error).message;
+        view.group.visible = true;
+        holo.finish(controller.radius);
+        applyEnv();
+        captions.say('The forge failed: ' + (e as Error).message, 12000);
         return;
       }
     }
-    if (abort === ac) progressEl.classList.remove('on');
   }
   let framed = false;
+  let lastFromCache = false;
   function scheduleRegen() {
     if (!state.autoRegen) return;
     clearTimeout(regenTimer);
-    regenTimer = window.setTimeout(regenerate, 250);
+    regenTimer = window.setTimeout(() => regenerate(true), 250);
   }
 
   function updateHud(p: PlanetData, ms: number) {
@@ -186,16 +252,11 @@ async function main() {
       rows.push(['radius', `${(p.radius / 1000).toFixed(0)} km`]);
     }
     rows.push(['relief', `${(p.minHeight / 1000).toFixed(1)} … +${(p.maxHeight / 1000).toFixed(1)} km`]);
-    rows.push(['faces', `6 × ${p.N}² · forged in ${(ms / 1000).toFixed(2)} s`]);
+    rows.push(['faces', `6 × ${p.N}² · ${lastFromCache ? 'from cache' : 'forged'} in ${(ms / 1000).toFixed(2)} s`]);
     $('pfacts').innerHTML = rows.map(([k, v]) => `${k.padEnd(8)} <span>${esc(v)}</span>`).join('\n');
 
     const hist = info?.history ?? [];
-    $('timeline').innerHTML = hist.length
-      ? `<div class="tl-title">Formation history <kbd>T</kbd></div>` +
-        hist
-          .map((h) => `<div class="tl-row"><span class="tl-t">${h.gyrAgo.toFixed(2)} Ga</span><span class="tl-s">${esc(h.stage)}</span><span class="tl-x">${esc(h.text)}</span></div>`)
-          .join('')
-      : '';
+    captions.play(hist.map((h) => ({ when: h.gyrAgo > 0 ? `${h.gyrAgo.toFixed(2)} Ga` : 'now', title: h.stage, text: h.text })));
   }
 
   // ---- Presets bar (archetypes) ----------------------------------------------------------------
@@ -226,6 +287,10 @@ async function main() {
   // Planet tab
   tPlanet.addBinding(state, 'autoRegen', { label: 'live regen' });
   tPlanet.addBinding(state, 'autoLook', { label: 'auto look' });
+  if (!import.meta.env.DEV) {
+    tPlanet.addBinding(state, 'cache', { label: 'planet cache' });
+    tPlanet.addButton({ title: 'Clear planet cache' }).on('click', () => void clearCache());
+  }
   const actions = tPlanet.addBlade({ view: 'buttongrid', size: [3, 1], cells: (x: number) => ({ title: ['Forge', 'New seed', 'Export'][x] }) }) as unknown as {
     on(ev: 'click', cb: (e: { index: [number, number] }) => void): void;
   };
@@ -270,6 +335,12 @@ async function main() {
   fSurf.addBinding(look, 'detailAmp', { label: 'detail relief (m)', min: 0, max: 1500, step: 5 });
   fSurf.addBinding(look, 'detailScale', { label: 'detail size (km)', min: 0.5, max: 40, step: 0.1 });
   fSurf.addBinding(look, 'fineDetail', { label: 'fine relief', min: 0, max: 3, step: 0.05 });
+  const fLand = tLook.addFolder({ title: 'Landform detail style', expanded: false });
+  fLand.addBinding(look, 'landRidged', { label: 'ridged', min: 0, max: 1, step: 0.01 });
+  fLand.addBinding(look, 'landBillowy', { label: 'billowy', min: 0, max: 1, step: 0.01 });
+  fLand.addBinding(look, 'landCracked', { label: 'cracked', min: 0, max: 1, step: 0.01 });
+  fLand.addBinding(look, 'landPitted', { label: 'pitted', min: 0, max: 1, step: 0.01 });
+  fLand.addBinding(look, 'finePits', { label: 'fine craterlets', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'shadows', { label: 'cast shadows', min: 0, max: 1, step: 0.05 });
   fSurf.addBinding(look, 'terrainAO', { label: 'terrain AO', min: 0, max: 1.5, step: 0.05 });
   fSurf.addBinding(look, 'specular', { label: 'specular', min: 0, max: 1.5, step: 0.05 });
@@ -351,9 +422,9 @@ async function main() {
     if (e.key === 'r' || e.key === 'R') newSeed();
     if (e.key === 'h' || e.key === 'H') {
       state.hideUi = !state.hideUi;
-      for (const id of ['pane', 'hud', 'presets', 'help', 'timeline']) $(id).style.display = state.hideUi ? 'none' : '';
+      for (const id of ['pane', 'hud', 'presets', 'help', 'captions']) $(id).style.display = state.hideUi ? 'none' : '';
     }
-    if (e.key === 't' || e.key === 'T') $('timeline').classList.toggle('collapsed');
+    if (e.key === 't' || e.key === 'T') captions.toggle();
     const dv = Object.values(DEBUG_VIEWS);
     if (/^[0-9]$/.test(e.key)) {
       look.debug = dv[Number(e.key)] ?? 0;
@@ -376,7 +447,6 @@ async function main() {
   rebuildGenPane();
   loadPreset(state.preset);
   controller.setView({ altitude: 1300, lat: 0.3, lon: 0.4 }, true);
-  boot.classList.add('done');
 
   const timer = new THREE.Timer();
   let time = 0;
@@ -397,6 +467,7 @@ async function main() {
     }
     shared.uTime.value = time;
     controller.update(dt);
+    holo.update(dt, time);
     sky.update(camera, renderer.getPixelRatio());
     if (!state.meshSegments) view.autoMeshSegments(camera, renderer.domElement.height, controller.altitude);
     view.updateFootprint(camera, renderer.domElement.height);
@@ -414,5 +485,8 @@ async function main() {
 main().catch((e) => {
   console.error(e);
   const boot = document.getElementById('boot');
-  if (boot) boot.innerHTML = `<div class="err">Failed to start: ${(e as Error).message}</div>`;
+  if (boot) {
+    boot.classList.remove('done');
+    boot.innerHTML = `<div class="err">Failed to start: ${(e as Error).message}</div>`;
+  }
 });

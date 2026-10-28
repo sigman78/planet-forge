@@ -50,13 +50,32 @@ export type SharedUniforms = ReturnType<typeof createSharedUniforms>;
 // Debug colours per splat layer: dust, highland, basalt, sand, rock, gravel, ice, salt.
 const LAYER_DEBUG = [0xc08a5a, 0xd8d0c0, 0x2a2a30, 0xe8b860, 0x8a6a5a, 0x6a6a70, 0xe8f4ff, 0xf0e070];
 const MAX_UNITS = 32;
+// Fine detail style per layer (ridged, billowy, cracked, pitted): dunes only on sand, crack networks on
+// ice and salt, lava lobes on basalt, craterlets in dust and highland regolith.
+const LAYER_STYLE: [number, number, number, number][] = [
+  [0.15, 0.25, 0, 0.6], // dust
+  [0.45, 0.1, 0, 0.45], // highland
+  [0.1, 0.55, 0.35, 0], // basalt
+  [1, 0, 0, 0], // sand
+  [0.6, 0.15, 0.25, 0], // rock
+  [0.15, 0.55, 0, 0.3], // gravel
+  [0.1, 0.1, 0.8, 0], // ice
+  [0, 0.15, 0.85, 0], // salt
+];
 
 export interface LookParams {
   heightExaggeration: number;
   seaFloorScale: number;
   detailAmp: number; // metres of procedural detail relief
   detailScale: number; // km
-  fineDetail: number; // strength of sub-heightmap bump relief (fragment only)
+  fineDetail: number; // strength of sub-mesh detail relief (fragment only)
+  /** Landform detail style weights (geometry octaves): ridged, billowy, cracked, pitted. */
+  landRidged: number;
+  landBillowy: number;
+  landCracked: number;
+  landPitted: number;
+  /** Fine pitted (craterlet) style strength: 1 on airless bodies, low where air and wind fill them in. */
+  finePits: number;
   shadows: number; // terrain cast shadows (heightmap ray march) strength
   specular: number; // specular scale
   roughMin: number; // roughness floor for dry layers
@@ -90,6 +109,11 @@ export const DEFAULT_LOOK: LookParams = {
   detailAmp: 350,
   detailScale: 6,
   fineDetail: 1,
+  landRidged: 0.6,
+  landBillowy: 0.2,
+  landCracked: 0,
+  landPitted: 0.2,
+  finePits: 1,
   shadows: 1,
   specular: 0.5,
   roughMin: 0.65,
@@ -154,6 +178,8 @@ export class PlanetView {
       uDetailScale: u(DEFAULT_LOOK.detailScale),
       uPixelAngle: u(0.001),
       uVertexSpacing: u(3),
+      uLandStyle: u(new THREE.Vector4(0.6, 0.2, 0, 0.2)),
+      uUseCells: u(1),
     };
 
     this.terrainMat = new THREE.ShaderMaterial({
@@ -173,6 +199,8 @@ export class PlanetView {
         uAntiTile: u(1),
         uHexFreq: u(1),
         uFineDetail: u(1),
+        uLayerStyle: u(LAYER_STYLE.map((v) => new THREE.Vector4(...v))),
+        uFinePits: u(1),
         uShadows: u(1),
         uSpecular: u(0.5),
         uRoughMin: u(0.65),
@@ -291,6 +319,10 @@ export class PlanetView {
     U.uDetailAmp.value = look.detailAmp;
     U.uDetailScale.value = look.detailScale;
     U.uFineDetail.value = look.fineDetail;
+    U.uFinePits.value = look.finePits;
+    const ls = [look.landRidged, look.landBillowy, look.landCracked, look.landPitted].map((v) => Math.max(v, 0));
+    const lsum = ls.reduce((a, b) => a + b, 0) || 1;
+    (U.uLandStyle.value as THREE.Vector4).set(ls[0] / lsum, ls[1] / lsum, ls[2] / lsum, ls[3] / lsum);
     U.uShadows.value = look.shadows;
     U.uSpecular.value = look.specular;
     U.uRoughMin.value = look.roughMin;

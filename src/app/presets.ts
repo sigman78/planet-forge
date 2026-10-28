@@ -66,7 +66,25 @@ export const MIN_ATMO_DENSITY = 0.04;
 const SEA_MODE: Record<SeaKind, number> = { water: 0, lava: 1, ice: 2, none: 3 };
 
 /** Copy the generator's render hints into the viewer settings. */
-export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams, bulk?: PlanetBulk) {
+/** Landform detail style per archetype: ridged, billowy, cracked, pitted. */
+const LAND_STYLE: Record<string, [number, number, number, number]> = {
+  rust: [0.65, 0.15, 0, 0.2], // wind-carved yardangs and gullies
+  cinder: [0.25, 0.15, 0.1, 0.5], // scorched, cratered regolith
+  'grey moon': [0.15, 0.1, 0, 0.75], // craters on craters
+  'ice shell': [0.25, 0.05, 0.7, 0], // fractured plates
+  'old ice': [0.1, 0.15, 0.3, 0.45], // relaxed craters, old fractures
+  sulfur: [0.1, 0.65, 0.25, 0], // lava lobes and flows
+  basalt: [0.3, 0.5, 0.2, 0], // flow fronts, cooling cracks
+  cryo: [0.15, 0.35, 0.5, 0], // cryolava domes in cracked ice
+};
+
+function hashString(s: string, seed: number): number {
+  let h = (seed ^ 0x9e3779b9) >>> 0;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x85ebca6b) >>> 0;
+  return h;
+}
+
+export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams, bulk?: PlanetBulk, archetype?: string, seed = 0) {
   env.atmoDensity = Math.max(MIN_ATMO_DENSITY, h.atmoDensity);
   env.atmoHeight = h.atmoHeightKm;
   env.rayleigh = { x: h.rayleigh[0], y: h.rayleigh[1], z: h.rayleigh[2] };
@@ -81,6 +99,7 @@ export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams, b
     const p = Math.max(bulk.atmospherePressureBar, 1e-16);
     const k = Math.min(Math.max((Math.log10(p) + 7) / 5, 0), 1); // 1e-7 bar -> 0, 1e-2 bar -> 1
     env.haze = 0.5 + 13 * k * k;
+    look.finePits = 1 - 0.85 * k;
     env.hazeH = Math.min(Math.max(bulk.radiusKm * 0.008, 1.5), 6) * (1 + k);
     // Tint from the dust layer (raw texture is greyish; the world tint carries the colour).
     const t = h.layerTints[0] ?? [1, 1, 1];
@@ -88,6 +107,16 @@ export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams, b
     const c = (v: number) => Math.round(255 * Math.min(1, 0.55 + 0.4 * (v / m)));
     env.hazeColor = `#${[t[0], t[1], t[2]].map((v) => c(v).toString(16).padStart(2, '0')).join('')}`;
   }
+  let st = archetype ? LAND_STYLE[archetype] : undefined;
+  if (!st) {
+    // 'wild' (or unknown): a random but seed-stable mix with one dominant style.
+    let x = hashString(archetype ?? 'wild', seed);
+    const r = () => ((x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 4294967296);
+    const w: [number, number, number, number] = [r() * 0.4, r() * 0.4, r() * 0.4, r() * 0.4];
+    w[Math.floor(r() * 4)] += 0.8;
+    st = w;
+  }
+  [look.landRidged, look.landBillowy, look.landCracked, look.landPitted] = st;
   look.oceanMode = SEA_MODE[h.seaKind] ?? 3;
   look.deepColor = h.seaDeepColor;
   look.shallowColor = h.seaShallowColor;

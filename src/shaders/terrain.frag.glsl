@@ -9,7 +9,9 @@ uniform sampler2DArray tAlbedo;   // sRGB albedo, a = height
 uniform sampler2DArray tNormal;   // GL normal
 uniform sampler2DArray tOrm;      // ao, roughness, metal
 uniform float uLayerScale[LAYERS];   // tiles per km
-uniform float uFineDetail;           // strength of the sub-heightmap bump octaves (0 = off)
+uniform float uFineDetail;           // strength of the sub-mesh detail octaves (0 = off)
+uniform vec4  uLayerStyle[LAYERS];
+uniform float uFinePits;             // scale of the pitted fine style (low on worlds with an atmosphere)   // fine detail style per layer (ridged, billowy, cracked, pitted)
 uniform sampler2DArray tAO;          // heightmap ambient occlusion (R)
 uniform float uShadows;              // cast-shadow strength (0 = off)
 uniform float uTerrainAO;            // heightmap AO strength
@@ -162,27 +164,35 @@ vec3 triNormal(Hex h, vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec2 W) {
   return a * W.x + b * W.y;
 }
 
-// Fine relief below the baked heightmap's resolution: continues detailM's spectrum (octaves 3..7,
-// ~1 km down to tens of metres at the default scale). Applied as a bump through screen-space
-// derivatives (one noise eval per octave, no finite differences). Each octave fades out before it
-// gets smaller than a few pixels, so it costs nothing visible from orbit and never shimmers.
-float fineDetailM(vec3 d, float h) {
-  if (uFineDetail <= 0.0) return 0.0;
-  float mask = h < 0.0 ? 0.3 : mix(0.5, 1.4, smoothstep(300.0, 5000.0, h));
-  float sum = 0.0;
-  float s = uDetailScale / 9.2;            // continues after detailM's last octave (scale / 4.37)
-  float a = 0.4;                           // relative to uDetailAmp
-  for (int i = 0; i < 4; i++) {
-    // Bump octaves need ~12+ px per wavelength to read as shape rather than grain.
-    float f = 1.0 - smoothstep(0.035, 0.09, gFootprint / s);
+// Gradient (km per km, world space) of all procedural relief: the landform octaves that the geometry
+// also carries, then fine octaves below the mesh in the style of the local materials. Analytic gradients
+// stay smooth down to ~3 px per wavelength (screen-derivative bumps go blocky below ~12 px), so the
+// detail reaches much farther out before it fades.
+float gDetailFootprint = 0.0;   // geometric mean of the screen footprint axes (see main)
+
+vec3 detailGrad(vec3 d, float h, vec4 fineStyle) {
+  if (uDetailAmp <= 0.0) return vec3(0.0);
+  vec3 G = vec3(0.0);
+  float s = uDetailScale;
+  float landM = landMask(h);
+  float fineM = (h < 0.0 ? 0.3 : mix(0.5, 1.4, smoothstep(300.0, 5000.0, h))) * uFineDetail;
+  float a = 0.4;
+  for (int k = 0; k < 8; k++) {
+    float f = 1.0 - smoothstep(0.1, 0.28, gDetailFootprint / s);
     if (f <= 0.0) break;
-    vec3 q = d * (uRadius / s) + float(i) * 17.3;
-    float r = 1.0 - abs(snoise(q));        // ridged: rocky crests and gullies rather than blobs
-    sum += a * f * (r * r - 0.45);
-    s /= 2.17;
-    a *= 0.42;                             // steep falloff: shape first, grain last
+    vec3 g;
+    if (k < 3) {
+      styleOct(d * (uRadius / s) + float(k) * 7.31, uLandStyle, g);
+      G += (LAND_AMP[k] * landM * f / s) * g;
+    } else {
+      styleOct(d * (uRadius / s) + float(k) * 17.3, fineStyle, g);
+      G += (a * fineM * f / s) * g;
+      a *= 0.45;
+    }
+    s /= DETAIL_STEP;
   }
-  return sum * uDetailAmp * mask * uFineDetail;
+  G -= dot(G, d) * d;   // noise is sampled on the sphere: only the tangential part is a slope
+  return G * (uDetailAmp * uHeightScale);
 }
 
 // Soft cast shadow from the baked heightmap: march toward the sun with growing steps and keep the
@@ -211,7 +221,12 @@ void main() {
   // Screen-space derivatives, taken here in uniform control flow.
   vec3 dpdx = dFdx(vWorldPos);
   vec3 dpdy = dFdy(vWorldPos);
-  gFootprint = max(max(length(dpdx), length(dpdy)), length(cameraPosition - vWorldPos) * uPixelAngle);
+  float fpIso = length(cameraPosition - vWorldPos) * uPixelAngle;
+  float fpA = max(length(dpdx), fpIso), fpB = max(length(dpdy), fpIso);
+  gFootprint = max(fpA, fpB);
+  // Detail fades with the geometric mean of the footprint axes (like anisotropic filtering): at grazing
+  // angles the long axis alone would erase it far too close to the camera.
+  gDetailFootprint = sqrt(fpA * fpB);
   gTileMix = uAntiTile;
 
   // --- Macro normal from the height texture -----------------------------------------------------
@@ -220,20 +235,9 @@ void main() {
   vec3 t2 = cross(n, t1);
   // Finite-difference step: one heightmap texel, or the pixel footprint when that is larger (avoids aliasing).
   float e = max(1.5707963 / uN * 0.75, gFootprint / uRadius);
-  vec3 dx = surfPos(normalize(n + t1 * e)) - surfPos(normalize(n - t1 * e));
-  vec3 dy = surfPos(normalize(n + t2 * e)) - surfPos(normalize(n - t2 * e));
+  vec3 dx = surfPosBaked(normalize(n + t1 * e)) - surfPosBaked(normalize(n - t1 * e));
+  vec3 dy = surfPosBaked(normalize(n + t2 * e)) - surfPosBaked(normalize(n - t2 * e));
   vec3 Nm = normalize(cross(dx, dy));
-  Nm = normalize(mix(n, Nm, uMacroNormal));
-
-  // Fine relief bump (Mikkelsen's surface-gradient bump mapping with screen derivatives).
-  float fineKm = fineDetailM(n, bakedHeightM(n)) * uHeightScale;
-  {
-    float dhx = dFdx(fineKm), dhy = dFdy(fineKm);
-    vec3 r1 = cross(dpdy, Nm), r2 = cross(Nm, dpdx);
-    float det = dot(dpdx, r1);
-    vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
-    Nm = normalize(abs(det) * Nm - grad);
-  }
 
   vec3 tc = cubeTexCoord(n, uN);
   // Mip level from the continuous direction, not from tc: tc jumps at cube-face edges, and implicit
@@ -249,6 +253,18 @@ void main() {
   float w[LAYERS];
   w[0] = s0.r; w[1] = s0.g; w[2] = s0.b; w[3] = s0.a;
   w[4] = s1.r; w[5] = s1.g; w[6] = s1.b; w[7] = s1.a;
+
+  // Procedural relief: fine style follows the local materials (dunes on sand, cracks on ice, ...).
+  vec4 fineStyle = vec4(0.0);
+  for (int i = 0; i < LAYERS; i++) fineStyle += w[i] * uLayerStyle[i];
+  fineStyle.w *= uFinePits;   // air and wind fill in small craters
+  fineStyle /= max(fineStyle.x + fineStyle.y + fineStyle.z + fineStyle.w, 1e-4);
+  {
+    vec3 G = detailGrad(n, hM, fineStyle);
+    G -= dot(G, Nm) * Nm;
+    Nm = normalize(Nm - G);
+  }
+  Nm = normalize(mix(n, Nm, uMacroNormal));
 
   if (uDebug == 4) {
     vec3 c = vec3(0.0);
