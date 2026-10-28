@@ -236,6 +236,8 @@ async function main() {
   // Look tab
   const fSurf = tLook.addFolder({ title: 'Surface' });
   fSurf.addBinding(look, 'heightExaggeration', { label: 'height exag.', min: 0, max: 8, step: 0.05 });
+  fSurf.addBinding(look, 'detailAmp', { label: 'detail relief (m)', min: 0, max: 1500, step: 5 });
+  fSurf.addBinding(look, 'detailScale', { label: 'detail size (km)', min: 0.5, max: 40, step: 0.1 });
   fSurf.addBinding(look, 'seaFloorScale', { label: 'seafloor scale', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'textureScale', { label: 'texture scale', min: 10, max: 2000, step: 1 });
   fSurf.addBinding(look, 'normalStrength', { label: 'detail normal', min: 0, max: 3, step: 0.01 });
@@ -366,7 +368,7 @@ async function main() {
   });
 
   // Expose for debugging in the console.
-  Object.assign(window as unknown as Record<string, unknown>, { forge: { renderer, scene, camera, view, pipeline, controller, env, look, get gen() { return gen; }, regenerate } });
+  Object.assign(window as unknown as Record<string, unknown>, { forge: { renderer, scene, camera, view, pipeline, controller, env, look, get gen() { return gen; }, regenerate, applyEnv, applyLook } });
 }
 
 main().catch((e) => {

@@ -2,7 +2,6 @@
 #define PI 3.14159265359
 #define LAYERS 8
 
-uniform sampler2DArray tHeight;
 uniform sampler2DArray tSplat0;
 uniform sampler2DArray tSplat1;
 uniform sampler2DArray tClimate;
@@ -10,11 +9,7 @@ uniform sampler2DArray tClouds;
 uniform sampler2DArray tAlbedo;   // sRGB albedo, a = height
 uniform sampler2DArray tNormal;   // GL normal
 uniform sampler2DArray tOrm;      // ao, roughness, metal
-uniform float uN;
 uniform float uCloudN;
-uniform float uRadius;
-uniform float uHeightScale;
-uniform float uSeaFloorScale;
 uniform float uLayerScale[LAYERS];   // tiles per km
 uniform vec3  uLayerTint[LAYERS];
 uniform float uNormalStrength;
@@ -41,9 +36,6 @@ uniform vec3  uBiomeColors[24];
 varying vec3 vDir;
 varying vec3 vWorldPos;
 
-float elevationKm(float hM) { return (hM < 0.0 ? hM * uSeaFloorScale : hM) * uHeightScale; }
-float heightM(vec3 d) { return texture(tHeight, cubeTexCoord(d, uN)).r; }
-vec3 surfPos(vec3 d) { return d * (uRadius + elevationKm(heightM(d))); }
 
 vec3 heightRamp(float h) {
   if (h < 0.0) {

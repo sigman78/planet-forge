@@ -7,6 +7,7 @@ import type { TerrainTextureSet } from './terrainTextures.ts';
 import cubeGlsl from '../shaders/cube.glsl?raw';
 import noiseGlsl from '../shaders/noise.glsl?raw';
 import atmoCommonGlsl from '../shaders/atmosphere_common.glsl?raw';
+import terrainCommon from '../shaders/terrain_common.glsl?raw';
 import terrainVert from '../shaders/terrain.vert.glsl?raw';
 import terrainFrag from '../shaders/terrain.frag.glsl?raw';
 import oceanGlsl from '../shaders/ocean.glsl?raw';
@@ -57,6 +58,8 @@ const BIOME_PALETTE = [
 export interface LookParams {
   heightExaggeration: number;
   seaFloorScale: number;
+  detailAmp: number;          // metres of procedural detail relief
+  detailScale: number;        // km
   textureScale: number;        // world-scale multiplier for texture tiles (stylised: >1 = bigger tiles)
   normalStrength: number;
   macroNormal: number;
@@ -87,6 +90,8 @@ export interface LookParams {
 export const DEFAULT_LOOK: LookParams = {
   heightExaggeration: 1,
   seaFloorScale: 0.6,
+  detailAmp: 350,
+  detailScale: 6,
   textureScale: 250,
   normalStrength: 1,
   macroNormal: 1,
@@ -149,6 +154,8 @@ export class PlanetView {
       uRadius: shared.uPlanetRadius,
       uHeightScale: u(0.001),
       uSeaFloorScale: u(DEFAULT_LOOK.seaFloorScale),
+      uDetailAmp: u(DEFAULT_LOOK.detailAmp),
+      uDetailScale: u(DEFAULT_LOOK.detailScale),
     };
 
     const tilesPerKm = layers.layers.map(() => 1);
@@ -175,8 +182,8 @@ export class PlanetView {
         uLayerDebugColor: u(LAYER_DEBUG.map((c) => new THREE.Color(c))),
         uBiomeColors: u(BIOME_PALETTE.map((c) => new THREE.Color(c))),
       },
-      vertexShader: COMMON + terrainVert,
-      fragmentShader: COMMON + terrainFrag,
+      vertexShader: COMMON + terrainCommon + terrainVert,
+      fragmentShader: COMMON + terrainCommon + terrainFrag,
     });
 
     const [ov, of] = splitShader(oceanGlsl);
@@ -255,6 +262,8 @@ export class PlanetView {
     const R = this.shared.uPlanetRadius.value;
     U.uHeightScale.value = 0.001 * look.heightExaggeration;
     U.uSeaFloorScale.value = look.seaFloorScale;
+    U.uDetailAmp.value = look.detailAmp;
+    U.uDetailScale.value = look.detailScale;
     // Tiles per km: the texture's real tile size scaled up by textureScale (stylised macro tiling).
     U.uLayerScale.value = this.layers.layers.map((l) => 1000 / (l.tileMeters * look.textureScale));
     U.uNormalStrength.value = look.normalStrength;
@@ -299,6 +308,8 @@ export class PlanetView {
     const hM = sampler(dir.x, dir.y, dir.z);
     const U = this.terrainMat.uniforms;
     const ex = (hM < 0 ? hM * U.uSeaFloorScale.value : hM) * U.uHeightScale.value;
-    return Math.max(R, R + ex);
+    // Margin for the procedural detail relief that the CPU heightmap does not contain.
+    const detail = U.uDetailAmp.value * 1.6 * U.uHeightScale.value;
+    return Math.max(R, R + ex + detail);
   }
 }

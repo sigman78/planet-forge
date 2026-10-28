@@ -8,6 +8,7 @@ uniform vec3 uCamPos;
 uniform float uSunIntensity;
 uniform int uSteps;
 uniform float uFrame;
+uniform float uJitter;
 varying vec2 vUv;
 
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
@@ -35,7 +36,7 @@ void main() {
 
   int steps = uSteps;
   float dt = (t1 - t0) / float(steps);
-  float jitter = ign(gl_FragCoord.xy + uFrame * 5.588238);
+  float jitter = 0.5 + (ign(gl_FragCoord.xy + uFrame * 5.588238) - 0.5) * uJitter;
   vec2 odView = vec2(0.0);
   vec3 sumR = vec3(0.0);
   vec3 sumM = vec3(0.0);

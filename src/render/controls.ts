@@ -147,7 +147,7 @@ export class PlanetCameraController {
 
     // Pitch: 90deg (looking at the planet centre) when far, toward the horizon when low.
     const altAboveGround = r - ground;
-    const t = this.autoTilt ? THREE.MathUtils.smoothstep(Math.log(altAboveGround), Math.log(8), Math.log(450)) : 1;
+    const t = this.autoTilt ? THREE.MathUtils.smoothstep(Math.log(altAboveGround), Math.log(15), Math.log(1500)) : 1;
     // Horizon dip angle so "horizon" view still shows a little ground.
     const horizonPitch = Math.acos(Math.min(ground / r, 1)) + 0.12;
     let pitch = THREE.MathUtils.lerp(horizonPitch, Math.PI / 2, t) - this.userPitch;

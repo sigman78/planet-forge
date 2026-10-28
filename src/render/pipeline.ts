@@ -41,6 +41,7 @@ class SceneAtmospherePass extends Pass {
         uSunIntensity: { value: 1.0 },
         uSteps: { value: 16 },
         uFrame: { value: 0 },
+        uJitter: { value: 0 },
       },
       vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
       fragmentShader: atmoCommon + atmoFrag,
