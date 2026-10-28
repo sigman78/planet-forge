@@ -9,6 +9,7 @@ import { loadCached, storeCached, clearCache } from './app/cache.ts';
 import { Hologram } from './render/hologram.ts';
 import { Captions } from './app/captions.ts';
 import { ScanReadout } from './app/scan.ts';
+import { PoiLabels } from './app/pois.ts';
 import { DEFAULT_ENV, applyLookHints, archetypeLabel, planetName, MIN_ATMO_DENSITY, type EnvParams } from './app/presets.ts';
 import { download, exportPlanet } from './app/export.ts';
 import { loadTerrainTextures } from './render/terrainTextures.ts';
@@ -163,6 +164,7 @@ async function main() {
   let abort: AbortController | null = null;
   let regenTimer = 0;
   const captions = new Captions($('captions'));
+  const poiLabels = new PoiLabels($('pois'));
   /** overlay: keep the current world on screen under a faint hologram (live slider tweaks). */
   async function regenerate(overlay = false) {
     abort?.abort();
@@ -216,6 +218,7 @@ async function main() {
       history.replaceState(null, '', `#${encodeURIComponent(state.preset)}/${params.seed}`);
       view.setPlanet(planet);
       view.group.visible = true;
+      poiLabels.set(planet.info?.pois ?? []);
       holo.finish(planet.radius / 1000);
       const R = planet.radius / 1000;
       const prevR = controller.radius;
@@ -523,9 +526,10 @@ async function main() {
     if (e.key === 'r' || e.key === 'R') newSeed();
     if (e.key === 'h' || e.key === 'H') {
       state.hideUi = !state.hideUi;
-      for (const id of ['pane', 'hud', 'presets', 'help', 'captions']) $(id).style.display = state.hideUi ? 'none' : '';
+      for (const id of ['pane', 'hud', 'presets', 'help', 'captions', 'pois']) $(id).style.display = state.hideUi ? 'none' : '';
     }
     if (e.key === 't' || e.key === 'T') captions.toggle();
+    if (e.key === 'l' || e.key === 'L') poiLabels.enabled = !poiLabels.enabled;
     const dv = Object.values(DEBUG_VIEWS);
     if (/^[0-9]$/.test(e.key)) {
       look.debug = dv[Number(e.key)] ?? 0;
@@ -572,6 +576,8 @@ async function main() {
     sky.update(camera, renderer.getPixelRatio());
     if (!state.meshSegments) view.autoMeshSegments(camera, renderer.domElement.height, controller.altitude);
     view.updateFootprint(camera, renderer.domElement.height);
+    if (view.group.visible) poiLabels.update(camera, controller.radius, controller.altitude, window.innerWidth, window.innerHeight);
+    else poiLabels.update(camera, controller.radius, 0, 1, 1);
     camInfo.text = `alt ${controller.altitude.toFixed(1)} km\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
     pipeline.render(dt);
     fps.end();

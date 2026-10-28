@@ -4,7 +4,7 @@
 // Bodies are dwarf-planet / large-moon sized (≈200–900 km, 'wild' up to 1,800 km). Gravity is tiny, so relief
 // scales up with 1/g (and the drama knob): basins, volcanoes and canyons read on the silhouette.
 
-import type { GeoUnit, HistoryEvent, LookHints, PlanetBulk, PlanetInfo, ResolvedParams, SeaKind, TectonicRegime } from '../core/types.ts';
+import type { GeoUnit, HistoryEvent, LookHints, PlanetBulk, PlanetInfo, Poi, ResolvedParams, SeaKind, TectonicRegime } from '../core/types.ts';
 import { Rng } from './noise.ts';
 import type { Noise3 } from './noise.ts';
 import { ARCHETYPE_LABELS, pick } from './params.ts';
@@ -889,9 +889,65 @@ function atmoText(P: number): string {
   return `${P.toExponential(0)} bar`;
 }
 
+// ---- points of interest ----------------------------------------------------------------------------------
+
+const VOLC_KIND: Record<VolcStyle, string> = {
+  shield: 'shield volcano', patera: 'patera', cone: 'volcanic cone', dome: 'volcanic dome', cryo: 'cryovolcano', block: 'block mountain',
+};
+
+/**
+ * Named landmarks for the globe view (the planner's features, ranked by how much they dominate the view).
+ * Basins, volcanoes and the main canyons already carry names; rises, chaos, rayed craters and caps get theirs
+ * here from a separate stream, so the existing names do not change.
+ */
+export function buildPois(plan: WorldPlan): Poi[] {
+  const Rk = plan.bulk.radiusKm;
+  const rng = new Rng(plan.p.seed, 30);
+  const fmt = (km: number) => (km >= 100 ? Math.round(km / 10) * 10 : Math.round(km)).toLocaleString('en-US');
+  const pois: Poi[] = [];
+  const add = (kind: string, name: string, d: number[], radius: number, rank: number, text: string) =>
+    pois.push({ kind, name, dir: [d[0], d[1], d[2]], radius, rank, text });
+  for (const b of plan.basins) {
+    const floor = ['central peak', 'peak ring', 'flat floor', 'deep bowl'][b.floor] ?? '';
+    add('basin', b.name, [b.x, b.y, b.z], b.r, b.r * 2 * Rk * 1.3, `impact basin · ${fmt(b.r * 2 * Rk)} km${floor ? ` · ${floor}` : ''}`);
+  }
+  for (const v of plan.volcanoes) {
+    if (!v.name) continue;
+    add('volcano', v.name, [v.x, v.y, v.z], v.r, v.r * 2 * Rk * 0.6 + v.h / 1000 * 25, `${VOLC_KIND[v.style]} · ${(v.h / 1000).toFixed(1)} km high`);
+  }
+  for (const r of plan.rifts) {
+    if (!r.name) continue;
+    const m = along([r.sx, r.sy, r.sz], [r.nx, r.ny, r.nz], r.len / 2);
+    add('rift', r.name, m, r.len / 2, r.len * Rk * 0.9 + r.depth / 1000 * 20, `${r.kind === 0 ? 'canyon system' : 'fissure belt'} · ${fmt(r.len * Rk)} km, ${(r.depth / 1000).toFixed(1)} km deep`);
+  }
+  for (const r of plan.rises) {
+    add('rise', makeName(rng) + ' Planum', [r.x, r.y, r.z], r.r, r.r * 2 * Rk * 0.8, `volcanic rise · ${fmt(r.r * 2 * Rk)} km · +${(r.h / 1000).toFixed(1)} km`);
+  }
+  for (const c of plan.chaosList) {
+    if (c.r < 0.07) continue;
+    add('chaos', makeName(rng) + ' Chaos', [c.x, c.y, c.z], c.r, c.r * 2 * Rk * 0.7, `chaos terrain · ${fmt(c.r * 2 * Rk)} km`);
+  }
+  const yc = plan.youngCraters;
+  for (let o = 0; o < yc.length; o += CRATER_STRIDE) {
+    const flag = yc[o + 7];
+    if (flag !== 1 && flag !== 2) continue;
+    const r = yc[o + 3];
+    add('crater', makeName(rng), [yc[o], yc[o + 1], yc[o + 2]], r, r * 2 * Rk * 3 + 40, `${flag === 2 ? 'crater with salt faculae' : 'fresh rayed crater'} · ${fmt(r * 2 * Rk)} km`);
+  }
+  if (plan.capDome > 0) {
+    for (const [sgn, nm] of [[1, 'Planum Boreum'], [-1, 'Planum Australe']] as const) {
+      add('cap', nm, [0, sgn, 0], Math.PI / 2 - (sgn > 0 ? plan.capLat[0] : plan.capLat[1]), 300, `polar layered deposits · ${(plan.capDome / 1000).toFixed(1)} km thick`);
+    }
+  }
+  // Strongest first; keep the list short so the globe never turns into a map.
+  pois.sort((a, b) => b.rank - a.rank);
+  return pois.slice(0, 16);
+}
+
 export function buildInfo(plan: WorldPlan, st: SurfaceStats): PlanetInfo {
   return {
     archetype: plan.archetype, name: plan.name, bulk: plan.bulk, history: buildHistory(plan, st), units: GEO_UNITS, look: lookHints(plan),
     resolved: { ...plan.resolved, seaVolume: Math.round(st.seaGEL) },
+    pois: buildPois(plan),
   };
 }

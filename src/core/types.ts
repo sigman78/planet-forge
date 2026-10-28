@@ -76,6 +76,18 @@ export interface PlanetInfo {
   look: LookHints;
   /** What each AUTO generator knob resolved to (keyed like GenParams). */
   resolved?: ResolvedParams;
+  /** Named landmarks, strongest first. */
+  pois?: Poi[];
+}
+
+/** A named landmark: kind (basin, volcano, rift, rise, chaos, crater, cap), unit direction, angular radius (rad). */
+export interface Poi {
+  kind: string;
+  name: string;
+  dir: [number, number, number];
+  radius: number;
+  rank: number;
+  text: string;
 }
 
 /** Resolved values of AUTO generator knobs, keyed by GenParams field name. */
