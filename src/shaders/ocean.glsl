@@ -83,6 +83,8 @@ void main() {
     float flowN = fbm3(q * 0.15 + vec3(uTime * 0.004));
     float cracks = 1.0 - abs(snoise(q + flowN * 3.0 + vec3(0.0, uTime * 0.01, 0.0)));
     cracks = pow(cracks, 10.0);
+    // Fade the crack pattern to its average once cells approach pixel size (no sparkle from orbit).
+    cracks = mix(0.08, cracks, 1.0 - smoothstep(0.1, 0.35, length(fwidth(q))));
     float hot = smoothstep(0.0, 400.0, depth) * 0.6 + 0.4;
     float heat = clamp(cracks * 1.4 + 0.25 * (fbm3(q * 0.05 - uTime * 0.002) + 0.5) * hot, 0.0, 1.5);
     vec3 crust = vec3(0.035, 0.03, 0.03);

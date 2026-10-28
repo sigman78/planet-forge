@@ -410,6 +410,8 @@ void main() {
     float molten = smoothstep(0.93, 0.99, temp);
     vec3 q = n * 220.0;
     float cracks = pow(1.0 - abs(snoise(q + 3.0 * fbm3(q * 0.15 + vec3(uTime * 0.004)))), 8.0);
+    // Crack cells are ~R/220 km: fade to their average glow once they get near pixel size (no sparkle).
+    cracks = mix(0.12, cracks, 1.0 - smoothstep(0.08, 0.3, gFootprint / (uRadius / 220.0)));
     float heat = clamp(cracks * 1.3 + 0.3, 0.0, 1.5);
     col = mix(col, vec3(0.035, 0.03, 0.03) * col / max(albedo, vec3(0.02)), molten * 0.7);
     col += uLavaColor * uLavaGlow * heat * heat * molten;
