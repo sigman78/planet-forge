@@ -245,11 +245,17 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
   // Closed-basin deposits need a carrier: running fluids (playas), frost (icy / cryo) or sulfur plumes.
   const deposits = plan.s.erosion > 0 || plan.icy || plan.archetype === 'sulfur' || plan.arch.family === 'cryovolcanic';
   if (plan.s.salt > 0.01 && deposits) {
-    // Only the floors of deep closed basins (on tiny high-relief bodies shallow closed depressions are everywhere).
-    const depth0 = 500 * plan.relief * plan.gRel, depth1 = 1400 * plan.relief * plan.gRel;
+    // Evaporites / frost deposits: only the deepest pockets of closed basins, broken into patches, and capped by
+    // area (a giant basin floor is one huge closed depression; it must not turn into one salt pan).
+    const depth0 = 500 * plan.relief * plan.gRel;
+    const target = Math.min(0.035, 0.02 * plan.s.salt); // area fraction before patchiness (which removes ~half)
+    const [fq] = weightedQuantiles(fill, N, [1 - target], -Infinity, Infinity, areaW);
+    const f0 = Math.max(depth0, fq), f1 = f0 + Math.max(depth0, 0.5 * f0);
     for (let i = 0; i < total; i++) {
-      if (hasSea && h[i] < 0) continue;
-      const pl = smoothstep(depth0, depth1, fill[i]) * Math.min(1, plan.s.salt);
+      if ((hasSea && h[i] < 0) || fill[i] <= f0) continue;
+      const q = dirOf(i);
+      const patch = smoothstep(-0.15, 0.25, n.fbm(q[0] * 14 + 9.1, q[1] * 14 - 4.2, q[2] * 14 + 2.7, 3));
+      const pl = smoothstep(f0, f1, fill[i]) * patch * Math.min(1, plan.s.salt);
       if (pl > 0.02) aux[i * 4 + 2] = Math.round(255 * pl);
     }
   }

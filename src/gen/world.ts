@@ -91,7 +91,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     style: 'shield', riseCount: [1, 2], riftStrength: [0.8, 1.2], scarps: [0, 0.2], lineae: [0, 0], chaos: [0.5, 0.9],
     floodLevel: [0.05, 0.12], erosion: [0.5, 0.9], dunes: [0.8, 1.3], salt: [0.3, 0.6], rays: [1, 4], polarCaps: [0.8, 1.2],
     crustRelief: 1, relax: 0, faculae: [0, 2],
-    tints: [[1.0, 0.55, 0.34], [0.68, 0.44, 0.3], [1.0, 0.82, 0.76], [0.4, 0.31, 0.28], [1.1, 0.74, 0.56], [0.95, 0.66, 0.5], [1, 0.97, 0.95], [0.8, 0.72, 0.62]],
+    tints: [[1.0, 0.55, 0.34], [0.68, 0.44, 0.3], [1.0, 0.82, 0.76], [0.4, 0.31, 0.28], [1.1, 0.74, 0.56], [0.95, 0.66, 0.5], [1, 0.97, 0.95], [0.62, 0.45, 0.34]],
   },
   cinder: {
     family: 'rocky', radiusKm: [300, 1000], ironFrac: [0.55, 0.72], volatileFrac: [0, 0.004], ageGyr: [4.0, 4.6], insolation: [4, 9], tidal: [0, 0.3],

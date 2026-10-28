@@ -13,7 +13,7 @@ import { generateInWorkers, workersAvailable } from './pool.ts';
 export { DEFAULT_PARAMS, GEN_PRESETS, PARAM_SCHEMA, ARCHETYPE_LABELS, ARCHETYPE_FAMILIES, AUTO, presetParams, resolveParams } from './params.ts';
 export type { Archetype, GenParams, ParamSchemaEntry } from './params.ts';
 export { GEO_UNITS } from './world.ts';
-export { LAYER_COLORS } from './preview.ts';
+export { LAYER_ALBEDO, LAYER_COLORS } from './preview.ts';
 
 export interface GenerateOptions {
   onProgress?: (stage: string, frac: number) => void;
