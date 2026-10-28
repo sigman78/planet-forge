@@ -46,6 +46,12 @@ export interface GenParams {
   /** Largest basin rim radius in radians of arc. */
   basinSize: number;
   craterDensity: number;
+  /** Oblique-impact elongation of the giant basins (0 round .. 1 strongly elongated, with butterfly ejecta). */
+  basinOblique: number;
+  /** Surviving rings around big basins (0..4). */
+  basinRings: number;
+  /** Degradation of the giant basins (0 fresh, crisp rims and rings .. 1 old, softened and infilled). */
+  basinAge: number;
   /** Number of volcanoes / paterae. */
   plumeCount: number;
   /** Volcano height multiplier (heights already scale with 1/gravity). */
@@ -112,6 +118,9 @@ export const DEFAULT_PARAMS: GenParams = {
   basinCount: AUTO,
   basinSize: AUTO,
   craterDensity: AUTO,
+  basinOblique: AUTO,
+  basinRings: AUTO,
+  basinAge: AUTO,
   plumeCount: AUTO,
   volcanoScale: AUTO,
   riseCount: AUTO,
@@ -189,6 +198,9 @@ export const PARAM_SCHEMA: ParamSchemaEntry[] = [
   auto('dichotomy', 'Crust & impacts', 'Dichotomy', 2, 0.01),
   auto('basinCount', 'Crust & impacts', 'Giant basins', 8, 1),
   auto('basinSize', 'Crust & impacts', 'Basin size (rad)', 0.8, 0.01),
+  auto('basinOblique', 'Crust & impacts', 'Basin elongation', 1, 0.01),
+  auto('basinRings', 'Crust & impacts', 'Basin rings', 4, 1),
+  auto('basinAge', 'Crust & impacts', 'Basin age (wear)', 1, 0.01),
   auto('craterDensity', 'Crust & impacts', 'Crater density', 3, 0.01),
   auto('rays', 'Crust & impacts', 'Rayed craters', 30, 1),
 

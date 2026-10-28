@@ -213,7 +213,15 @@ function wildArch(rng: Rng): ArchDef {
 // ---- plan types ----------------------------------------------------------------------------------------------
 
 export interface Disk { x: number; y: number; z: number; r: number }
-export interface Basin extends Disk { depth: number; rings: number; peak: number; name: string }
+/**
+ * Giant impact basin. Beyond the disk: major axis (ax, ay, az) and eccentricity of oblique impacts, rim
+ * irregularity, floor style (0 central peak, 1 peak ring, 2 flat infill, 3 deep bowl), age/degradation 0..1,
+ * ring spacing and width (in basin radii), and a noise key for its azimuthal irregularity.
+ */
+export interface Basin extends Disk {
+  depth: number; rings: number; peak: number; name: string;
+  ax: number; ay: number; az: number; ecc: number; irr: number; floor: number; age: number; ringStep: number; ringW: number; key: number;
+}
 export interface Volcano extends Disk { h: number; style: VolcStyle; caldera: number; flowR: number; name: string }
 export interface Rise extends Disk { h: number }
 /** Great-circle arc trough: start s, plane normal n, length (rad), half-width (rad), depth (m). kind 0 canyon, 1 graben, 2 fissure. */
@@ -530,12 +538,32 @@ export function planWorld(p: GenParams): WorldPlan {
   // --- giant basins (depth scales with body size, capped for silhouettes) ---
   const brng = new Rng(p.seed, 5);
   const basins: Basin[] = [];
+  // Each basin also rolls its own impact story from a separate stream (so positions stay put): oblique or not,
+  // what the floor rebounded into, how many rings survived, and how old and worn it is.
+  const vr = new Rng(p.seed, 21);
   for (let i = 0; i < basinCount; i++) {
     const c = randomUnit(brng);
-    const r = basinSize * (i === 0 ? 1 : 0.4 + 0.45 * brng.next());
+    const r = basinSize * (i === 0 ? 0.6 + 0.4 * vr.next() : 0.4 + 0.45 * brng.next());
     const depth = Math.min(0.07 * capK * R, R * (0.025 + 0.025 * brng.next()) * Math.sqrt(r / 0.4) * (0.6 + 0.4 * drama)) * relief / (1 + arch.relax * 1.5);
-    const peak = r > 0.22 ? depth * (0.5 + 0.4 * brng.next()) * (0.6 + 0.4 * drama) : 0;
-    basins.push({ x: c[0], y: c[1], z: c[2], r, depth, rings: r > 0.15 ? 2 + brng.int(2) : 1, peak, name: makeName(nameRng) + (arch.icy ? ' Regio' : ' Planitia') });
+    const peakH = depth * (0.5 + 0.4 * brng.next()) * (0.6 + 0.4 * drama);
+    // Oblique impacts: an elongated basin with butterfly ejecta along the major axis.
+    const obl = p.basinOblique >= 0 ? p.basinOblique * (0.7 + 0.3 * vr.next()) : vr.next() < 0.35 ? 0.3 + 0.7 * vr.next() : 0.15 * vr.next();
+    const t = randomUnit(vr);
+    const td = t[0] * c[0] + t[1] * c[1] + t[2] * c[2];
+    const tl = Math.hypot(t[0] - td * c[0], t[1] - td * c[1], t[2] - td * c[2]) || 1;
+    // Floor: 0 central peak, 1 peak ring, 2 flat (infilled), 3 deep bowl. Big basins favour peak rings.
+    const fr = vr.next();
+    const floor = r > 0.3 ? (fr < 0.25 ? 0 : fr < 0.6 ? 1 : fr < 0.85 ? 2 : 3) : r > 0.15 ? (fr < 0.45 ? 0 : fr < 0.7 ? 1 : fr < 0.9 ? 2 : 3) : fr < 0.6 ? 0 : 3;
+    const maxRings = r > 0.15 ? 4 : 1;
+    const rings = p.basinRings >= 0 ? Math.min(maxRings, Math.round(p.basinRings * (r > 0.15 ? 1 : 0.4))) : vr.int(maxRings + 1);
+    const age = p.basinAge >= 0 ? Math.min(1, p.basinAge * (0.8 + 0.4 * vr.next())) : i === 0 ? 0.55 * vr.next() : vr.next();
+    basins.push({
+      x: c[0], y: c[1], z: c[2], r, depth, rings, peak: floor === 0 || floor === 1 ? peakH : 0,
+      ax: (t[0] - td * c[0]) / tl, ay: (t[1] - td * c[1]) / tl, az: (t[2] - td * c[2]) / tl,
+      ecc: 0.4 * Math.min(1, obl), irr: 0.04 + 0.1 * vr.next(), floor, age,
+      ringStep: 0.28 + 0.27 * vr.next(), ringW: 0.03 + 0.04 * vr.next(), key: vr.next() * 97,
+      name: makeName(nameRng) + (arch.icy ? ' Regio' : ' Planitia'),
+    });
   }
 
   // --- craters: count is per steradian (angular sizes), old ones before the floods, young ones after ---
@@ -690,7 +718,8 @@ export function planWorld(p: GenParams): WorldPlan {
     const c = randomUnit(trng);
     chaosList.push({ x: c[0], y: c[1], z: c[2], r: 0.06 + 0.1 * trng.next(), amp: 700 * relief * gRel });
   }
-  if (basins.length > 0 && basins[0].r > 0.25 && s.chaos > 0.1) {
+  // Antipodal chaos needs focused seismic waves: likely but not certain (vr: drawn after the basin rolls).
+  if (basins.length > 0 && basins[0].r > 0.25 && s.chaos > 0.1 && vr.next() < 0.6) {
     const b = basins[0];
     chaosList.push({ x: -b.x, y: -b.y, z: -b.z, r: b.r * 0.55, amp: 1400 * relief * s.chaos * gRel });
   }
@@ -721,6 +750,7 @@ export function planWorld(p: GenParams): WorldPlan {
   const resolved: ResolvedParams = {
     distortion, radiusKm: bulk.radiusKm, ironFrac: bulk.ironFrac, volatileFrac: bulk.volatileFrac, ageGyr: bulk.ageGyr,
     insolation: bulk.insolation, tidalHeating: tidal, ...s, basinCount, basinSize, plumeCount, riseCount, rays: rayCount,
+    basinOblique: basins.length ? basins[0].ecc / 0.4 : 0, basinRings: basins.length ? basins[0].rings : 0, basinAge: basins.length ? basins[0].age : 0,
   };
   if (seaMode === 'volume' || bulk.seaKind === 'none') resolved.seaVolume = seaMode === 'volume' ? seaValue : 0;
 

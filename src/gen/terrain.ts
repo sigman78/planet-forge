@@ -140,25 +140,52 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
       for (const b of plan.basins) {
         const dot = px * b.x + py * b.y + pz * b.z;
         const ang = Math.acos(Math.min(1, Math.max(-1, dot)));
-        const xr = ang / b.r;
+        if (ang > b.r * 2.6 * (1 + b.ecc + b.irr)) continue;
+        // Azimuth around the centre, measured from the major axis.
+        const bx = b.y * b.az - b.z * b.ay, by = b.z * b.ax - b.x * b.az, bz = b.x * b.ay - b.y * b.ax;
+        const phi = Math.atan2(px * bx + py * by + pz * bz, px * b.ax + py * b.ay + pz * b.az);
+        const cs = Math.cos(phi), sn = Math.sin(phi);
+        const c2 = cs * cs - sn * sn; // cos 2phi: +1 along the major axis
+        // Elongated (oblique) and scalloped outline: the effective radius depends on the azimuth.
+        const reff = b.r * (1 + b.ecc * c2) * (1 + b.irr * n.simplex(cs * 1.7 + b.key, sn * 1.7, b.key * 0.37));
+        const xr = ang / reff;
         if (xr > 2.6) continue;
-        const rimH = b.depth * 0.22;
+        // Old basins: lower rims, softer walls, infilled floors, faint rings.
+        const age = b.age;
+        const rimH = b.depth * 0.22 * (1 - 0.6 * age);
+        const depth = b.depth * (1 - 0.35 * age);
         let bh: number;
         if (xr < 1) {
-          bh = -b.depth * (1 - Math.pow(smoothstep(0.45, 1.0, xr), 1.2)) + rimH * smoothstep(0.8, 1.0, xr);
-          if (b.peak > 0) bh += b.peak * Math.exp(-(xr * xr) / 0.012) * (0.85 + 0.15 * n.simplex(px * 40, py * 40, pz * 40));
+          const bowl = b.floor === 3
+            ? 1 - Math.pow(xr, 1.6 + 0.6 * age)
+            : 1 - Math.pow(smoothstep(0.45 - 0.3 * age, 1.0, xr), 1.2 - 0.4 * age);
+          bh = -depth * bowl + rimH * smoothstep(0.8 - 0.25 * age, 1.0, xr);
+          if (b.floor === 2) bh += depth * 0.18 * smoothstep(0.75, 0.0, xr); // infill dome of lava / ejecta fallback
+          const nk = 0.85 + 0.15 * n.simplex(px * 40, py * 40, pz * 40);
+          if (b.floor === 0 && b.peak > 0) bh += b.peak * (1 - 0.5 * age) * Math.exp(-(xr * xr) / 0.012) * nk;
+          else if (b.floor === 1 && b.peak > 0) {
+            // Peak ring: a broken ring of massifs at about half the rim radius.
+            const seg = smoothstep(-0.4, 0.2, n.simplex(cs * 2.5 + b.key, sn * 2.5, 7.7));
+            bh += b.peak * 0.55 * (1 - 0.5 * age) * Math.exp(-(((xr - 0.48) / 0.07) ** 2)) * nk * (0.35 + 0.65 * seg);
+          }
           floorA = Math.max(floorA, smoothstep(0.92, 0.7, xr));
         } else {
           const tail = Math.pow(2.6, -3);
-          bh = (rimH * (Math.pow(xr, -3) - tail)) / (1 - tail);
+          // Ejecta apron; oblique impacts throw it along the major axis (butterfly) and starve the cross-range.
+          bh = ((rimH * (Math.pow(xr, -3) - tail)) / (1 - tail)) * (1 + 1.5 * b.ecc * c2);
           for (let k = 1; k <= b.rings; k++) {
-            const rr = 1 + 0.42 * k;
-            const ring = Math.exp(-(((xr - rr) / 0.045) ** 2));
-            bh += rimH * (0.7 / k) * ring - rimH * 0.25 * Math.exp(-(((xr - rr + 0.12) / 0.06) ** 2));
-            rimB = Math.max(rimB, ring * 0.9);
+            const rr = 1 + b.ringStep * k * (1 + 0.08 * n.simplex(k * 3.3, b.key, 1.1));
+            if (rr > 2.5) break;
+            const ringW = b.ringW * (1 + 0.25 * k);
+            const ring = Math.exp(-(((xr - rr) / ringW) ** 2));
+            // Rings survive as arcs, not full circles.
+            const seg = smoothstep(-0.45, 0.25, n.simplex(cs * 2.2 + k * 3.1 + b.key, sn * 2.2, k * 1.9));
+            const amp = rimH * (0.75 / k) * (1 - 0.5 * age) * seg;
+            bh += amp * ring - amp * 0.3 * Math.exp(-(((xr - rr + ringW * 2.5) / (ringW * 1.3)) ** 2));
+            rimB = Math.max(rimB, ring * 0.9 * seg);
           }
         }
-        rimB = Math.max(rimB, Math.exp(-(((xr - 1) / 0.07) ** 2)));
+        rimB = Math.max(rimB, Math.exp(-(((xr - 1) / 0.07) ** 2)) * (1 - 0.5 * age));
         h += bh;
       }
 
