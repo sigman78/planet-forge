@@ -72,5 +72,22 @@ Newest entries at the bottom. Times are local.
   - The formation history plays as quiet film-style captions (T toggles).
 - **Night side:** planetshine fill from the parent giant (wrapped Lambert, about 1:8 vs. the sun) plus a higher space
   ambient. The night side used to sit about 1000x below the day side and crushed to black under ACES.
-- **Wilder worlds** (user: "more wild/distorted/pronounced"): a generator agent (Opus) is lifting the stacked-relief
-  caps, adding a distortion knob and lumpy/triaxial figures for all radii. In progress.
+- **Wilder worlds** (user: "more wild/distorted/pronounced"): a generator agent (Opus) lifted the stacked-relief caps
+  and added a distortion knob with lumpy/triaxial figures for all radii (see below).
+
+## 2026-10-28 05:40–06:30 — wilder worlds, figure atmosphere, publish
+- **Generator:** relief caps scale with drama (`capK = 0.45 + 0.95·w`). The new `distortion` param (AUTO) builds
+  triaxial/lumpy figures, hard-clamped to ±24.5% R. Mean relief is now 5–16% of R by archetype (wild 16.4%, basalt 13.8%,
+  cryo 13.0%); extremes reach 39–47% total relief. High calderas on lava worlds become lava lakes (unit 19).
+- **Atmosphere follows the figure:** a 64×32 equirect map of the smoothed body shape (about a 10° cap average).
+  Altitude for density and haze is measured above it, and the shells grow by the highest point. Lumpy worlds no longer
+  float inside a detached spherical halo, and deep basins are not whited out.
+- **Molten calderas** glow (crust cracks over a dark melt), with a footprint fade so they don't sparkle from orbit.
+  The lava sea gets the same fade.
+- **Haze retune:** dense-air worlds (basalt, 0.09 bar) were veiled milky. Haze is now `0.5 + 7k²` (was 13k²) with
+  a lower scale height.
+- **Publish:**
+  - GitHub Pages via the Actions workflow.
+  - Cloudflare assets-only Worker at planet-forge.ioupg.com, through the `cf` CLI. `DEPLOY_TARGET=cloudflare`
+    switches the Vite base to `/` and enables `@cloudflare/vite-plugin`.
+  - The README was rewritten with demo links and screenshots.

@@ -1,39 +1,120 @@
 # Planet Forge
 
-Procedural small-planet generator and viewer for testing what a cube-sphere CDLOD planet engine would use: data layout, terrain, splat materials and look.
-Built with Vite, TypeScript and three.js (WebGL2), with an HDR pipeline, physically based shading and ACES tone mapping.
+Procedural generator and viewer for small rocky, icy and volcanic worlds, from Ceres-sized dwarf planets to Io-like
+moons. It is a testbed for a cube-sphere CDLOD planet engine: it uses the same data layout, terrain, splat materials
+and look, rendered in the browser with three.js.
 
-```
+**Live demo:** [sigman78.github.io/planet-forge](https://sigman78.github.io/planet-forge/) ·
+[planet-forge.ioupg.com](https://planet-forge.ioupg.com)
+
+Needs a WebGL2 browser and a reasonable GPU. A desktop browser works best.
+
+| | | |
+|---|---|---|
+| [![Sulfur world](docs/screenshots/sulfur.jpg)](https://sigman78.github.io/planet-forge/#sulfur/3) | [![Wild world](docs/screenshots/wild.jpg)](https://sigman78.github.io/planet-forge/#wild/1) | [![Cryovolcanic world](docs/screenshots/cryo.jpg)](https://sigman78.github.io/planet-forge/#cryo/2024) |
+| Sulfur: `#sulfur/3` | Wild: `#wild/1` | Cryovolcanic: `#cryo/2024` |
+| [![Rust world](docs/screenshots/rust.jpg)](https://sigman78.github.io/planet-forge/#rust/78915) | [![Grey moon](docs/screenshots/greymoon.jpg)](https://sigman78.github.io/planet-forge/#grey%20moon/31337) | [![Basalt world](docs/screenshots/basalt.jpg)](https://sigman78.github.io/planet-forge/#basalt/2) |
+| Rust: `#rust/78915` | Grey moon: `#grey%20moon/31337` | Basalt: `#basalt/2` |
+
+Click a picture to open that exact world. Every world has a shareable `#archetype/seed` link.
+
+## What it does
+
+### Generator (`src/gen/`)
+Each world starts as a formation history, not as noise:
+1. **Bulk:** accretion, core formation and ice fraction set the radius, density, heat and age.
+2. **Geology:** geo-zones and units built on that bulk (basins, crater populations, rifts, volcanic provinces,
+   cryovolcanic flows, lava lakes, tidal cracks), followed by droplet erosion in direction space (no seams).
+3. **Climate, volatiles and materials:** an 8-layer splat map (dust, highland, basalt, sand, rock, gravel, ice, salt).
+
+There are nine archetypes: Rust, Cinder, Grey moon, Ice shell, Old ice, Sulfur, Basalt, Cryovolcanic and Wild.
+- **Drama** scales how wild the relief gets.
+- **Distortion** turns small bodies into triaxial or lumpy "potatoes". The figure is clamped at ±24.5% of the radius.
+
+The generator runs in a Web Worker pool in the browser. It also runs in Node from the CLI.
+
+### Renderer (`src/render/`, `src/shaders/`)
+- HDR pipeline, GGX physically based shading, ACES tone mapping and bloom.
+- Displaced, tan-warped cube sphere with no cube-face seams.
+- Terrain blends the top 3 splat layers with triplanar mapping, hex-tiling (no visible repeats) and height-based blending.
+- **Procedural detail** is one octave spectrum with analytic gradients, in four styles: ridged, billowy, cracked and
+  pitted.
+  - Landform octaves follow the archetype.
+  - Fine octaves follow the local material: dunes on sand, crack networks on ice and salt, lobes on basalt and
+    craterlets in regolith.
+- **Light:** heightmap ray-marched cast shadows, cavity AO baked on the CPU and planetshine fill from the parent giant,
+  so the night side is not pitch black.
+- **Atmosphere:** a Rayleigh/Mie post pass plus a low-altitude haze march.
+  - The air follows a smoothed map of the body's figure, so lumpy worlds keep their haze on the ground, not in space.
+  - Density and haze scale with surface pressure: a faint hint on airless moons, dusty horizons on thin-air worlds.
+- **Surfaces:** glowing lava lakes and calderas, plus ice-shell and lava "sea" modes.
+
+### Presentation
+- While a world forges, a faceted wireframe hologram blinks and fills in with progress. There is no loading screen.
+- Bulk facts decode into the HUD one by one, like scan results.
+- The formation history plays as quiet captions along the bottom of the screen.
+- Generated worlds are cached in IndexedDB (6 most recent), keyed by the parameters and a hash of the generator source.
+  A cached world comes back in about 0.1 s instead of about 3 s.
+
+## Controls
+
+| Input | Action |
+|---|---|
+| Drag | Orbit |
+| Wheel | Zoom (exponential, terrain-aware) |
+| Right-drag / Shift-drag | Heading and pitch; the view tilts toward the horizon as you descend |
+| `R` | New seed |
+| `H` | Hide UI (for screenshots) |
+| `T` | Toggle captions |
+| `0`–`9` | Debug views: lit, albedo, normals, height, splat, geologic map, temperature, volatiles, flow, cube faces |
+
+- The archetype buttons along the top pick an archetype.
+- The side panel exposes every generator parameter (with live regeneration), plus look, landform detail style,
+  atmosphere, light, post, cache and debug settings.
+- **Export** writes a `.planet` file for engine import tests: a JSON header plus raw face arrays
+  (see `src/app/export.ts`).
+
+## Development
+
+```sh
 npm install
-npm run dev          # http://localhost:5188
-npm test             # vitest: cube mapping, generator determinism, seams, splat sums
-npm run gen -- --seed 42 --res 512 --preset terran --out out/terran   # offline bake + previews (Node)
+npm run dev        # http://localhost:5188
+npm test           # vitest: cube mapping, generator determinism, seams, splat sums
+npm run build      # typecheck + production build (GitHub Pages base /planet-forge/)
+npm run gen -- --preset sulfur --seed 3 --res 512 --out out/sulfur   # offline bake + preview PNGs (Node)
+npm run deploy     # build + deploy to Cloudflare (planet-forge.ioupg.com) with the cf CLI
 ```
 
-Offline asset tools (Python + uv, in `tools/`):
-```
+- **GitHub Pages:** pushing to `master` deploys there through `.github/workflows/pages.yml`.
+- **Cloudflare:** an assets-only Worker configured in `cloudflare.config.ts`.
+
+Offline asset tools (Python with [uv](https://docs.astral.sh/uv/), in `tools/`):
+
+```sh
 cd tools
-uv run python -I fetch_textures.py   # download + pack CC0 PBR terrain sets (ambientCG) -> public/textures
-uv run python -I make_sky.py --seed 7  # procedural Milky Way HDR + star catalogue -> public/sky
+uv run python -I fetch_textures.py      # download and pack the CC0 PBR terrain sets -> public/textures
+uv run python -I make_sky.py --seed 7   # procedural Milky Way HDR + star catalogue -> public/sky
 ```
 
-## How it fits together
+## Layout
 
 | Part | Where | What |
 |---|---|---|
-| Contract | `CONTRACT.md`, `src/core/` | Tan-warped cube sphere, 6 faces of N² texels with a 1-texel gutter; height / splat / climate / cloud arrays |
-| Generator | `src/gen/` | Plates, continents, ridges, craters and volcanoes, then droplet erosion in direction space (no seams), climate, biomes and 8-layer splat, then clouds. Runs in a Web Worker pool and also in Node (CLI) |
-| Renderer | `src/render/`, `src/shaders/` | Displaced cube-sphere mesh; terrain shader blends the top 4 splat layers with triplanar and height-based blending, GGX lighting and procedural detail relief; ocean, lava or ice shell; clouds with shadows; post-process Rayleigh/Mie atmosphere; bloom; ACES |
-| Assets | `public/textures`, `public/sky`, `tools/` | 8 CC0 ambientCG material sets plus a synthesized FFT water normal; procedural HDR sky |
+| Data contract | `CONTRACT.md`, `src/core/` | Tan-warped cube sphere: 6 faces of N² texels with a 1-texel gutter; height, splat, climate and unit arrays |
+| Generator | `src/gen/` | Formation history (`world.ts`), terrain and units (`terrain.ts`), erosion, surface/splat, worker pool, CLI |
+| Renderer | `src/render/`, `src/shaders/` | Planet view, terrain/atmosphere/ocean shaders, figure map, hologram, camera controller |
+| App | `src/app/`, `src/main.ts` | Presets and look hints, cache, captions, scan readout, export, UI |
+| Assets | `public/textures`, `public/sky`, `tools/` | 8 CC0 ambientCG material sets, a synthesized FFT water normal, a procedural HDR sky |
 
-## Controls
-- **Drag**: orbit. **Wheel**: zoom (exponential, terrain-aware). **Right-drag / shift-drag**: heading and pitch. The view tilts toward the horizon as you descend.
-- **R**: new seed. **H**: hide UI. **0–9**: debug views (lit, albedo, normals, height, splat, biomes, temperature, moisture, water flow, cube faces).
-- Preset bar: Terran, Archipelago, Dune world, Ice world, Volcanic, Barren moon, Alien.
-- Panel: every generator parameter (live regeneration), look, ocean, clouds, atmosphere, light, post, and debug.
-- **Export** writes a single `.planet` file (JSON header plus raw face arrays, see `src/app/export.ts`) for engine import tests.
+Units: generator heights are metres above the datum. The renderer works in km with the planet at the origin. Texture
+tiling is stylised (it would be invisible from orbit at real scale); a real CDLOD engine would switch to true scale near
+the ground.
 
-## Notes
-- Units: generator heights are metres relative to sea level. The renderer works in km with the planet at the origin.
-- Texture tiling is stylised (`texture scale`), because real-metre tiling is invisible from orbit. A real CDLOD engine would switch to true scale near the ground.
-- See `WORKLOG.md` for the build log and decisions, and `docs/notes-*.md` for per-part notes.
+`WORKLOG.md` is the build log, with the decisions and measurements. `docs/notes-*.md` has notes on each part.
+
+## Credits
+
+Terrain textures are CC0 sets from [ambientCG](https://ambientcg.com). See `public/textures/ATTRIBUTION.md`.
+Built with [three.js](https://threejs.org), [Vite](https://vite.dev) and [Tweakpane](https://tweakpane.github.io/docs/).
+
+No license has been chosen for the code yet. Until one is added, all rights are reserved.
