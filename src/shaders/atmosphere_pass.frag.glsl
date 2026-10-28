@@ -9,7 +9,23 @@ uniform float uSunIntensity;
 uniform int uSteps;
 uniform float uFrame;
 uniform float uJitter;
+uniform float uHQ;              // 1 = volumetric terrain shadows in the dust and haze, more haze steps; debug: 2 = shadow map on the ground, 3 = haze glow only
+uniform sampler2D tSunShadow;   // sun shadow map, 6 faces tiled 3x2: R = km above the datum where light starts, G = its lift above the ground
+uniform float uSunShadowS;      // face tile size in texels
+uniform float uShafts;          // stretches the terrain's shadow volumes upward (1 = physical)
 varying vec2 vUv;
+
+// 1 where the air at p sees the sun past the terrain, 0 inside a mountain's shadow (HQ only).
+float terrainLit(vec3 p, float soft) {
+  float r = length(p);
+  vec3 stf = dirToFace(p / r);
+  vec2 f = clamp(stf.xy * 0.5 + 0.5, vec2(0.5 / uSunShadowS), vec2(1.0 - 0.5 / uSunShadowS));
+  vec2 uv = (f + vec2(mod(stf.z, 3.0), floor(stf.z / 3.0))) / vec2(3.0, 2.0);
+  vec2 sh = textureLod(tSunShadow, uv, 0.0).rg;
+  // Lit ground has no lift, so stretched shafts still start exactly where the ground shadows do.
+  float litElev = sh.r + (uShafts - 1.0) * sh.g;
+  return smoothstep(-soft, soft, r - uPlanetRadius - litElev);
+}
 
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
@@ -24,6 +40,12 @@ void main() {
   vec3 ro = uCamPos;
   vec3 rd = normalize(wp - ro);
   float sceneT = d >= 0.999999 ? 1e9 : length(wp - ro);
+  if (uHQ > 1.5 && uHQ < 2.5) {
+    // Debug: the shadow-height map's verdict for the visible ground (lifted a little off the surface).
+    float v = sceneT < 1e8 ? terrainLit(wp + normalize(wp) * 0.3, 0.2) : 0.0;
+    gl_FragColor = vec4(vec3(v), 1.0);
+    return;
+  }
 
   vec2 hit = raySphere(ro, rd, uAtmoRadius + uFigureMax);
   if (hit.x > hit.y || hit.y < 0.0) { gl_FragColor = vec4(col, 1.0); return; }
@@ -50,8 +72,10 @@ void main() {
     odView += dens;
     vec3 odSun = opticalDepthToSun(p, 6);
     vec3 tr = transmittanceFromOD(odView + odSun);
+    // Shafts: the low dust (Mie) also falls into the terrain's shadow.
+    float litM = uHQ > 0.0 ? terrainLit(p, 0.4 + 0.15 * uMieH) : 1.0;
     sumR += dens.x * tr;
-    sumM += dens.y * tr;
+    sumM += dens.y * tr * litM;
   }
   float mu = dot(rd, uSunDir);
   float phaseR = 3.0 / (16.0 * PI) * (1.0 + mu * mu);
@@ -66,9 +90,12 @@ void main() {
     vec2 hh = raySphere(ro, rd, min(uPlanetRadius + uFigureMax + uHazeH * 6.0, uAtmoRadius + uFigureMax));
     float a0 = max(hh.x, 0.0), a1 = min(hh.y, min(sceneT, ground.x > 0.0 && ground.x < ground.y ? ground.x : 1e9));
     if (a1 > a0) {
-      float hdt = (a1 - a0) / 16.0;
+      int hsteps = uHQ > 0.0 ? 48 : 16;
+      float hdt = (a1 - a0) / float(hsteps);
       float dither = ign(gl_FragCoord.xy);   // static per-pixel offset: fine noise instead of bands
-      for (int i = 0; i < 16; i++) {
+      float soft = 0.15 + 0.25 * uHazeH;
+      for (int i = 0; i < 48; i++) {
+        if (i >= hsteps) break;
         vec3 p = ro + rd * (a0 + (float(i) + dither) * hdt);
         float r = length(p);
         float hz = max(r - uPlanetRadius - figureKm(p / r), -0.7 * uHazeH);
@@ -80,6 +107,7 @@ void main() {
         vec2 occ = raySphere(p, uSunDir, uGroundRadius);
         float lit = (occ.x > 0.0 && occ.x < occ.y) ? 0.0 : 1.0;
         float odSunH = uHaze * uHazeH * exp(-hz / uHazeH) / max(cz + 0.15, 0.08);
+        if (uHQ > 0.0 && lit > 0.0) lit *= terrainLit(p, soft);
         sumH += dz * exp(-uHaze * hazeOD - odSunH) * (lit * smoothstep(-0.12, 0.05, cz));
       }
     }
@@ -87,5 +115,6 @@ void main() {
   float gh = uHazeG;
   float phaseH = (1.0 - gh * gh) / (4.0 * PI * pow(1.0 + gh * gh - 2.0 * gh * mu, 1.5));
   inscatter += sumH * uHaze * uHazeColor * (phaseH + 0.02) * uSunColor * uSunIntensity;
+  if (uHQ > 2.5) { gl_FragColor = vec4(sumH * uHaze * uHazeColor * (phaseH + 0.02) * uSunColor * uSunIntensity * 3.0, 1.0); return; }
   gl_FragColor = vec4(col * viewTr * exp(-uHaze * hazeOD) + inscatter, 1.0);
 }

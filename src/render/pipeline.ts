@@ -6,6 +6,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import atmoFrag from '../shaders/atmosphere_pass.frag.glsl?raw';
 import atmoCommon from '../shaders/atmosphere_common.glsl?raw';
+import cubeGlsl from '../shaders/cube.glsl?raw';
 import type { SharedUniforms } from './planetView.ts';
 
 /** Renders the scene into an HDR target with a depth texture, then applies the atmosphere. */
@@ -42,9 +43,13 @@ class SceneAtmospherePass extends Pass {
         uSteps: { value: 16 },
         uFrame: { value: 0 },
         uJitter: { value: 0 },
+        uHQ: { value: 0 },
+        tSunShadow: { value: null },
+        uSunShadowS: { value: 512 },
+        uShafts: { value: 1 },
       },
       vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: atmoCommon + atmoFrag,
+      fragmentShader: cubeGlsl + atmoCommon + atmoFrag,
       depthTest: false,
       depthWrite: false,
     });

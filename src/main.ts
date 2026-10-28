@@ -17,6 +17,7 @@ import { createSharedUniforms, DEFAULT_LOOK, PlanetView, type LookParams } from 
 import { Pipeline } from './render/pipeline.ts';
 import { createSky } from './render/sky.ts';
 import { PlanetCameraController } from './render/controls.ts';
+import { SunShadowMap } from './render/sunShadow.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -50,6 +51,12 @@ async function main() {
     cache: true, // reuse planets stored in IndexedDB (production builds)
     meshSegments: 0, // 0 = auto (by on-screen size)
     hideUi: false,
+    /** HQ volumetrics: terrain shadows in the dust and haze (sun shadow-height map), more haze steps. */
+    hq: true,
+    /** HQ only: how far the terrain's shadow volumes reach up into the dust (1 = physical). */
+    shafts: 3,
+    /** Console aid: 1 = shadow map verdict on the ground, 2 = haze glow only. */
+    hqDebug: 0,
   };
   // Shareable worlds: #<archetype>/<seed> in the URL.
   const fromHash = /^#([^/]+)\/(\d+)$/.exec(location.hash);
@@ -96,6 +103,9 @@ async function main() {
   shared.uHaze.value = 0;
 
   const pipeline = new Pipeline(renderer, scene, camera, shared);
+  const sunShadow = new SunShadowMap(view);
+  pipeline.atmoUniforms.tSunShadow.value = sunShadow.rt.texture;
+  pipeline.atmoUniforms.uSunShadowS.value = sunShadow.size;
   const controller = new PlanetCameraController(camera, renderer.domElement);
   controller.surface = (dir) => {
     const d = view.data;
@@ -480,6 +490,8 @@ async function main() {
   fAtmo.addBinding(env, 'hazeH', { label: 'haze height (km)', min: 0.3, max: 20, step: 0.1 });
   fAtmo.addBinding(env, 'hazeColor', { label: 'haze colour' });
   fAtmo.addBinding(env, 'atmoSteps', { label: 'march steps', min: 4, max: 64, step: 1 });
+  fAtmo.addBinding(state, 'hq', { label: 'HQ volumetrics' });
+  fAtmo.addBinding(state, 'shafts', { label: 'dust shafts', min: 1, max: 8, step: 0.1 });
 
   // Light tab
   tLight.addBinding(env, 'sunAzimuth', { label: 'sun azimuth', min: -180, max: 180, step: 0.5 });
@@ -579,13 +591,17 @@ async function main() {
     if (view.group.visible) poiLabels.update(camera, controller.radius, controller.altitude, window.innerWidth, window.innerHeight);
     else poiLabels.update(camera, controller.radius, 0, 1, 1);
     camInfo.text = `alt ${controller.altitude.toFixed(1)} km\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
+    const hq = state.hq && view.group.visible && shared.uHaze.value + shared.uMie.value * shared.uAtmoDensity.value > 0;
+    pipeline.atmoUniforms.uHQ.value = hq ? 1 + state.hqDebug : 0;
+    pipeline.atmoUniforms.uShafts.value = state.shafts;
+    if (hq) sunShadow.update(renderer, shared.uSunDir.value);
     pipeline.render(dt);
     fps.end();
   });
 
   // Expose for debugging in the console.
   Object.assign(window as unknown as Record<string, unknown>, {
-    forge: { renderer, scene, camera, view, pipeline, controller, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
+    forge: { renderer, scene, camera, view, pipeline, controller, sunShadow, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
   });
 }
 
