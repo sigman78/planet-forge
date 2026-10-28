@@ -14,8 +14,16 @@ export interface GenParams {
   resolution: number;
   /** World archetype: sets ranges for the bulk and the default strength of every stage. */
   archetype: Archetype;
-  /** 0..2: exaggerates volcanoes, basins, canyons and scarps (1 = archetype default). */
+  /**
+   * 0..2: wildness. Exaggerates volcanoes, basins, canyons and scarps and raises every relief cap with them
+   * (0 = tame and nearly round, 1 = default, 2 = blown out of proportion).
+   */
   drama: number;
+  /**
+   * 0..2: non-sphericity of the figure (triaxial stretch + low-order lumps), as seen on the silhouette.
+   * AUTO: archetype range × (0.4 + 0.6·drama); young warm ice shells relax round, cryo / wild worlds are potatoes.
+   */
+  distortion: number;
   /** Vertical scale multiplier for all relief. */
   reliefScale: number;
 
@@ -90,6 +98,7 @@ export const DEFAULT_PARAMS: GenParams = {
   resolution: 512,
   archetype: 'rust',
   drama: 1,
+  distortion: AUTO,
   reliefScale: 1,
 
   radiusKm: AUTO,
@@ -167,6 +176,7 @@ export const PARAM_SCHEMA: ParamSchemaEntry[] = [
   { key: 'resolution', group: 'General', label: 'Resolution', options: { '128': 128, '256': 256, '512': 512, '1024': 1024 } },
   { key: 'archetype', group: 'General', label: 'Archetype', options: archOptions },
   { key: 'drama', group: 'General', label: 'Drama', min: 0, max: 2, step: 0.01 },
+  auto('distortion', 'General', 'Distortion (figure)', 2, 0.01),
   { key: 'reliefScale', group: 'General', label: 'Relief scale', min: 0.25, max: 3, step: 0.01 },
 
   auto('radiusKm', 'Bulk', 'Radius (km)', 2000, 5),
@@ -224,7 +234,7 @@ export const GEN_PRESETS: Record<string, Partial<GenParams>> = {
   sulfur: { archetype: 'sulfur' },
   basalt: { archetype: 'basalt' },
   cryo: { archetype: 'cryo' },
-  wild: { archetype: 'wild', drama: 1.5 },
+  wild: { archetype: 'wild', drama: 1.6 },
 };
 
 /** Archetype families, for grouping in the UI. */

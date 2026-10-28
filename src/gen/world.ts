@@ -6,6 +6,7 @@
 
 import type { GeoUnit, HistoryEvent, LookHints, PlanetBulk, PlanetInfo, SeaKind, TectonicRegime } from '../core/types.ts';
 import { Rng } from './noise.ts';
+import type { Noise3 } from './noise.ts';
 import { ARCHETYPE_LABELS, pick } from './params.ts';
 import type { Archetype, GenParams } from './params.ts';
 
@@ -75,6 +76,8 @@ export interface ArchDef {
   crustRelief: number;
   /** Viscous relaxation of large craters on ice-rich crust (0 = none, 1 = strong). */
   relax: number;
+  /** Figure distortion range at drama 1 (triaxial stretch + lumps; warm young ice relaxes round). */
+  figure: Range;
   palimpsests?: Range; grooveBands?: Range; cantaloupe?: boolean; stripes?: boolean; faculae?: Range; blocks?: Range;
   tints: [number, number, number][];
 }
@@ -90,7 +93,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     dichotomy: [0.8, 1.3], basinCount: [1, 3], basinSize: [0.3, 0.5], craterDensity: [0.6, 0.9], plumeCount: [2, 5], volcanoScale: [0.9, 1.2],
     style: 'shield', riseCount: [1, 2], riftStrength: [0.8, 1.2], scarps: [0, 0.2], lineae: [0, 0], chaos: [0.5, 0.9],
     floodLevel: [0.05, 0.12], erosion: [0.5, 0.9], dunes: [0.8, 1.3], salt: [0.3, 0.6], rays: [1, 4], polarCaps: [0.8, 1.2],
-    crustRelief: 1, relax: 0, faculae: [0, 2],
+    crustRelief: 1, figure: [0.8, 1.1], relax: 0, faculae: [0, 2],
     tints: [[1.0, 0.55, 0.34], [0.68, 0.44, 0.3], [1.0, 0.82, 0.76], [0.4, 0.31, 0.28], [1.1, 0.74, 0.56], [0.95, 0.66, 0.5], [1, 0.97, 0.95], [0.62, 0.45, 0.34]],
   },
   cinder: {
@@ -101,7 +104,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     dichotomy: [0.1, 0.3], basinCount: [1, 2], basinSize: [0.35, 0.5], craterDensity: [0.9, 1.2], plumeCount: [0, 3], volcanoScale: [0.4, 0.7],
     style: 'dome', riseCount: [0, 0], riftStrength: [0, 0], scarps: [1, 1.4], lineae: [0, 0], chaos: [0.6, 1],
     floodLevel: [0.18, 0.3], erosion: [0, 0], dunes: [0, 0], salt: [0.15, 0.35], rays: [5, 10], polarCaps: [0, 0],
-    crustRelief: 0.8, relax: 0,
+    crustRelief: 0.8, figure: [0.6, 0.9], relax: 0,
     tints: [[0.5, 0.47, 0.43], [0.44, 0.42, 0.39], [0.85, 0.82, 0.8], [0.38, 0.36, 0.33], [0.75, 0.72, 0.68], [0.62, 0.6, 0.56], GREY, [0.62, 0.62, 0.64]],
   },
   'grey moon': {
@@ -112,7 +115,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     dichotomy: [0.5, 0.9], basinCount: [2, 4], basinSize: [0.35, 0.7], craterDensity: [1.1, 1.5], plumeCount: [0, 3], volcanoScale: [0.3, 0.5],
     style: 'dome', riseCount: [0, 0], riftStrength: [0, 0.15], scarps: [0.1, 0.3], lineae: [0, 0], chaos: [0.3, 0.6],
     floodLevel: [0.14, 0.24], erosion: [0, 0], dunes: [0, 0], salt: [0, 0], rays: [6, 12], polarCaps: [0, 0],
-    crustRelief: 1, relax: 0,
+    crustRelief: 1, figure: [0.45, 0.7], relax: 0,
     tints: [[0.66, 0.65, 0.64], [0.56, 0.56, 0.55], [0.95, 0.95, 1.0], [0.5, 0.5, 0.5], [0.95, 0.95, 0.95], [0.78, 0.78, 0.78], GREY, [0.68, 0.68, 0.68]],
   },
   'ice shell': {
@@ -123,7 +126,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     dichotomy: [0, 0.2], basinCount: [0, 1], basinSize: [0.15, 0.25], craterDensity: [0.04, 0.12], plumeCount: [0, 3], volcanoScale: [0.5, 0.9],
     style: 'cryo', riseCount: [0, 0], riftStrength: [0, 0.3], scarps: [0, 0], lineae: [0.9, 1.3], chaos: [0.8, 1.3],
     floodLevel: [0, 0], erosion: [0, 0], dunes: [0, 0], salt: [0.4, 0.8], rays: [1, 3], polarCaps: [0, 0],
-    crustRelief: 0.35, relax: 0.6,
+    crustRelief: 0.35, figure: [0.2, 0.4], relax: 0.6,
     tints: [[0.82, 0.55, 0.38], [0.95, 0.9, 0.86], [0.6, 0.5, 0.45], [0.92, 0.9, 0.88], [0.8, 0.86, 0.94], [0.7, 0.6, 0.55], [0.95, 1.0, 1.08], [1.05, 0.78, 0.6]],
   },
   'old ice': {
@@ -134,7 +137,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     dichotomy: [0.2, 0.5], basinCount: [1, 2], basinSize: [0.3, 0.5], craterDensity: [1.3, 1.7], plumeCount: [0, 0], volcanoScale: [0, 0],
     style: 'dome', riseCount: [0, 0], riftStrength: [0, 0], scarps: [0, 0], lineae: [0.6, 1.0], chaos: [0, 0],
     floodLevel: [0, 0], erosion: [0, 0], dunes: [0, 0], salt: [0.2, 0.4], rays: [4, 8], polarCaps: [0, 0],
-    crustRelief: 0.5, relax: 1, palimpsests: [3, 7], grooveBands: [2, 4],
+    crustRelief: 0.5, figure: [0.3, 0.5], relax: 1, palimpsests: [3, 7], grooveBands: [2, 4],
     tints: [[0.42, 0.36, 0.3], [0.62, 0.56, 0.5], [0.4, 0.36, 0.33], [0.7, 0.66, 0.62], [0.62, 0.66, 0.72], [0.4, 0.35, 0.3], [0.88, 0.9, 0.95], [1.0, 1.0, 1.04]],
   },
   sulfur: {
@@ -145,7 +148,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     dichotomy: [0, 0.15], basinCount: [0, 0], basinSize: [0.2, 0.3], craterDensity: [0, 0.02], plumeCount: [45, 80], volcanoScale: [0.8, 1.2],
     style: 'patera', riseCount: [0, 0], riftStrength: [0, 0], scarps: [0, 0], lineae: [0, 0], chaos: [0, 0],
     floodLevel: [0.06, 0.12], erosion: [0, 0], dunes: [0, 0], salt: [1, 1.4], rays: [0, 0], polarCaps: [0, 0],
-    crustRelief: 0.7, relax: 0, blocks: [6, 11],
+    crustRelief: 0.7, figure: [0.9, 1.2], relax: 0, blocks: [6, 11],
     tints: [[1.35, 1.05, 0.38], [1.15, 0.95, 0.55], [0.36, 0.3, 0.27], [1.2, 0.95, 0.5], [0.95, 0.72, 0.45], [0.9, 0.55, 0.32], [1.05, 1.05, 0.9], [1.3, 1.22, 0.55]],
   },
   basalt: {
@@ -156,7 +159,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     dichotomy: [0.3, 0.7], basinCount: [0, 2], basinSize: [0.25, 0.4], craterDensity: [0.1, 0.25], plumeCount: [12, 24], volcanoScale: [0.8, 1.1],
     style: 'shield', riseCount: [1, 2], riftStrength: [0.8, 1.3], scarps: [0, 0], lineae: [0, 0], chaos: [0, 0.2],
     floodLevel: [0.3, 0.45], erosion: [0.5, 0.9], dunes: [0, 0.3], salt: [0.1, 0.3], rays: [0, 2], polarCaps: [0, 0],
-    crustRelief: 0.9, relax: 0,
+    crustRelief: 0.9, figure: [0.8, 1.1], relax: 0,
     tints: [[0.62, 0.52, 0.46], [0.6, 0.52, 0.45], [0.8, 0.76, 0.76], [0.4, 0.36, 0.34], [0.85, 0.75, 0.68], [0.7, 0.6, 0.54], GREY, [0.9, 0.82, 0.62]],
   },
   cryo: {
@@ -167,7 +170,7 @@ export const ARCHETYPES: Record<Exclude<Archetype, 'wild'>, ArchDef> = {
     dichotomy: [0.1, 0.3], basinCount: [0, 1], basinSize: [0.2, 0.35], craterDensity: [0.2, 0.5], plumeCount: [4, 9], volcanoScale: [1.0, 1.4],
     style: 'cryo', riseCount: [0, 0], riftStrength: [0.3, 0.7], scarps: [0, 0], lineae: [0.4, 0.8], chaos: [0.2, 0.5],
     floodLevel: [0, 0], erosion: [0, 0], dunes: [0, 0], salt: [0.9, 1.3], rays: [0, 2], polarCaps: [0, 0],
-    crustRelief: 0.5, relax: 0.7, cantaloupe: true, stripes: true,
+    crustRelief: 0.5, figure: [0.9, 1.25], relax: 0.7, cantaloupe: true, stripes: true,
     tints: [[0.75, 0.68, 0.66], [0.95, 0.94, 0.95], [0.6, 0.58, 0.6], [0.95, 0.92, 0.94], [0.78, 0.84, 0.94], [0.65, 0.62, 0.64], [0.96, 1.0, 1.06], [1.05, 0.9, 0.92]],
   },
 };
@@ -183,6 +186,7 @@ function wildArch(rng: Rng): ArchDef {
     'plumeCount', 'volcanoScale', 'riseCount', 'riftStrength', 'scarps', 'chaos', 'floodLevel', 'erosion', 'dunes', 'salt', 'rays', 'polarCaps', 'lineae'];
   for (const k of keys) (out as unknown as Record<string, unknown>)[k] = (other() as unknown as Record<string, unknown>)[k];
   out.radiusKm = [200, 1800];
+  out.figure = [1.25, 1.9];
   out.atmo = other().atmo;
   out.style = (['shield', 'patera', 'cone', 'dome', 'cryo'] as VolcStyle[])[rng.int(5)];
   if (out.style === 'patera' && out.plumeCount[1] < 20) out.plumeCount = [20, 50];
@@ -217,6 +221,38 @@ export interface Rift { sx: number; sy: number; sz: number; nx: number; ny: numb
 /** Arcuate thrust scarp on a small circle (angular radius rho) around pole c, azimuth a0..a0+a1. */
 export interface Scarp { cx: number; cy: number; cz: number; rho: number; a0: number; a1: number; h: number; w: number; back: number; face: number }
 export interface Chaos extends Disk { amp: number }
+/**
+ * Non-spherical figure (metres, relief scale applied): triaxial stretch along a random frame, low-order fbm lumps
+ * and a few broad lobes / dents. Evaluated analytically per direction (figureAt) in the cube stage, after the
+ * flood basalts and the feature limit, so maria and the limit work on the residual while seas pool in the lows.
+ */
+export interface Figure {
+  /** Rows: three orthonormal axes. */
+  axes: [number, number, number][];
+  /** Triaxial coefficients (m) per axis: h = Σ e_i (d·a_i)² − Σe/3. */
+  e: [number, number, number];
+  lumpAmp: number;
+  lumpFreq: number;
+  /** Broad Gaussian lobes (+) and dents (−): centre, chord² width, amplitude (m). */
+  blobs: { x: number; y: number; z: number; w2: number; a: number }[];
+}
+
+/** Figure height (m) at unit direction (x, y, z). Smooth (degree ≲ 4); `n` is the cube stage's figure noise. */
+export function figureAt(f: Figure, n: Noise3, x: number, y: number, z: number): number {
+  let h = -(f.e[0] + f.e[1] + f.e[2]) / 3;
+  for (let k = 0; k < 3; k++) {
+    const a = f.axes[k];
+    const d = x * a[0] + y * a[1] + z * a[2];
+    h += f.e[k] * d * d;
+  }
+  if (f.lumpAmp > 0) h += f.lumpAmp * n.fbm(x * f.lumpFreq + 3.7, y * f.lumpFreq - 8.1, z * f.lumpFreq + 0.9, 2);
+  for (const b of f.blobs) {
+    const c2 = (x - b.x) ** 2 + (y - b.y) ** 2 + (z - b.z) ** 2;
+    h += b.a * Math.exp(-c2 / b.w2);
+  }
+  return h;
+}
+
 /** Band of parallel grooves along a great circle with normal n (Ganymede-style grooved terrain). */
 export interface GrooveBand { nx: number; ny: number; nz: number; w: number; freq: number; amp: number }
 
@@ -240,6 +276,14 @@ export interface WorldPlan {
   seaMode: 'none' | 'coverage' | 'volume';
   seaValue: number;
   relief: number;
+  /**
+   * Wildness cap factor from drama: every per-feature cap (fraction of R) and the stacked-relief limit scale with it
+   * (0.45 at drama 0, 1.4 at 1, 2.35 at 2); horizontal footprint ceilings scale with its square root.
+   */
+  capK: number;
+  /** Resolved figure distortion (0..2). */
+  distortion: number;
+  figure: Figure;
   /** Relief multiplier from low gravity (≈ (3.7/g)^0.3). */
   gRel: number;
   drama: number;
@@ -247,8 +291,6 @@ export interface WorldPlan {
   dichoAxis: [number, number, number];
   dichoAmp: number;
   crustAmp: number;
-  /** Low-degree figure lumpiness (m) for the smallest bodies. */
-  shapeAmp: number;
   basins: Basin[];
   oldCraters: Float64Array;
   youngCraters: Float64Array;
@@ -417,6 +459,10 @@ export function planWorld(p: GenParams): WorldPlan {
   const gRel = Math.min(3, Math.pow(3.7 / g, 0.3));
   const Rkm = bulk.radiusKm;
   const R = Rkm * 1000;
+  // Wildness: all relief caps (fractions of R) scale together, so lifting one never just hits the next.
+  const wild = Math.min(2, drama);
+  const capK = 0.45 + 0.95 * wild;
+  const hs = Math.sqrt(capK); // horizontal footprint ceilings (keeps slopes sane as caps rise)
   const val = (v: number, r: Range) => pick(v, between(sr, r));
   const s = {
     dichotomy: val(p.dichotomy, arch.dichotomy),
@@ -452,11 +498,32 @@ export function planWorld(p: GenParams): WorldPlan {
   const nameRng = new Rng(p.seed, 10);
   const orbitDays = tidal > 1 ? 1 + 6 / Math.sqrt(tidal / 2) * (0.7 + 0.6 * sr.next()) : 0;
 
-  // --- crust: dichotomy + low-degree crustal thickness, lumpy figure on tiny bodies ---
+  // --- crust: dichotomy + low-degree crustal thickness ---
   const dichoAxis = randomUnit(new Rng(p.seed, 4));
-  const dichoAmp = s.dichotomy * 2600 * relief * arch.crustRelief * gRel;
-  const crustAmp = 1300 * relief * arch.crustRelief * gRel;
-  const shapeAmp = R * 0.045 * smooth(750, 200, Rkm) * relief;
+  const dichoAmp = s.dichotomy * 2600 * relief * arch.crustRelief * gRel * (0.6 + 0.4 * wild);
+  const crustAmp = 1300 * relief * arch.crustRelief * gRel * (0.6 + 0.4 * wild);
+
+  // --- figure: triaxial stretch + lumps + lobes. Smaller bodies are lumpier; drama and the archetype set the AUTO value ---
+  const frng = new Rng(p.seed, 13);
+  const distortion = Math.min(2, pick(p.distortion, between(frng, arch.figure) * (0.4 + 0.6 * wild)));
+  // Big bodies pull themselves rounder ('wild' ignores that: even 1,800 km wild worlds stay potatoes).
+  const sizeK = Math.max(archetype === 'wild' ? 1 : 0, 0.7 + 0.6 * smooth(1200, 200, Rkm));
+  const figR = R * relief * distortion * sizeK;
+  const ax0 = randomUnit(frng);
+  const ax1 = norm3(...cross(ax0, randomUnit(frng)));
+  const ax2 = cross(ax0, ax1);
+  const triA = 0.023 * figR;
+  const figure: Figure = {
+    axes: [ax0, ax1, ax2],
+    e: [triA, triA * (-0.35 + 0.8 * frng.next()), -triA * (0.55 + 0.45 * frng.next())],
+    lumpAmp: 0.018 * figR, lumpFreq: 0.9 + 0.5 * frng.next(), blobs: [],
+  };
+  const nBlobs = Math.round(1 + 2 * distortion + frng.next());
+  for (let i = 0; i < nBlobs; i++) {
+    const c = randomUnit(frng);
+    const wr = 0.35 + 0.5 * frng.next(); // angular width (rad) ≈ chord width
+    figure.blobs.push({ x: c[0], y: c[1], z: c[2], w2: wr * wr, a: (frng.next() < 0.55 ? 1 : -1) * (0.4 + 0.6 * frng.next()) * 0.02 * figR });
+  }
 
   // --- giant basins (depth scales with body size, capped for silhouettes) ---
   const brng = new Rng(p.seed, 5);
@@ -464,7 +531,7 @@ export function planWorld(p: GenParams): WorldPlan {
   for (let i = 0; i < basinCount; i++) {
     const c = randomUnit(brng);
     const r = basinSize * (i === 0 ? 1 : 0.4 + 0.45 * brng.next());
-    const depth = Math.min(0.07 * R, R * (0.025 + 0.025 * brng.next()) * Math.sqrt(r / 0.4) * (0.6 + 0.4 * drama)) * relief / (1 + arch.relax * 1.5);
+    const depth = Math.min(0.07 * capK * R, R * (0.025 + 0.025 * brng.next()) * Math.sqrt(r / 0.4) * (0.6 + 0.4 * drama)) * relief / (1 + arch.relax * 1.5);
     const peak = r > 0.22 ? depth * (0.5 + 0.4 * brng.next()) * (0.6 + 0.4 * drama) : 0;
     basins.push({ x: c[0], y: c[1], z: c[2], r, depth, rings: r > 0.15 ? 2 + brng.int(2) : 1, peak, name: makeName(nameRng) + (arch.icy ? ' Regio' : ' Planitia') });
   }
@@ -485,7 +552,7 @@ export function planWorld(p: GenParams): WorldPlan {
   for (let i = 0; i < riseCount; i++) {
     const c = offsetDir(dichoAxis, Math.PI / 2 + (vrng.next() - 0.5) * 0.5, vrng.next() * Math.PI * 2);
     const r = 0.32 + 0.25 * vrng.next();
-    const h = softcap((4500 + 4000 * vrng.next()) * Math.sqrt(Math.max(0.1, s.volcanoScale)) * (0.5 + 0.5 * drama) * Math.pow(3.7 / g, 0.35), 0.05 * R) * relief;
+    const h = softcap((4500 + 4000 * vrng.next()) * Math.sqrt(Math.max(0.1, s.volcanoScale)) * (0.5 + 0.5 * drama) * Math.pow(3.7 / g, 0.35), 0.05 * capK * R) * relief;
     rises.push({ x: c[0], y: c[1], z: c[2], r, h });
   }
 
@@ -504,20 +571,20 @@ export function planWorld(p: GenParams): WorldPlan {
     const big = i === 0 ? 1 : 0.3 + 0.7 * size;
     let h: number, rr: number;
     if (style === 'shield') {
-      h = softcap(21000 * gScale * s.volcanoScale * dr, 0.07 * R) * big * relief;
-      rr = Math.min(0.4, (h / 0.08) / R * (0.8 + 0.4 * vrng.next()));
+      h = softcap(21000 * gScale * s.volcanoScale * dr, 0.07 * capK * R) * big * relief;
+      rr = Math.min(0.4 * hs, (h / 0.08) / R * (0.8 + 0.4 * vrng.next()));
     } else if (style === 'patera') {
       h = (500 + 1500 * size) * Math.pow(gScale, 0.3) * relief * s.volcanoScale;
       rr = 0.012 + 0.035 * size;
     } else if (style === 'cone') {
-      h = softcap(8000 * gScale * s.volcanoScale * dr, 0.045 * R) * big * relief;
-      rr = Math.min(0.15, (h / 0.18) / R);
+      h = softcap(8000 * gScale * s.volcanoScale * dr, 0.045 * capK * R) * big * relief;
+      rr = Math.min(0.15 * hs, (h / 0.18) / R);
     } else if (style === 'cryo') {
-      h = softcap(9000 * gScale * s.volcanoScale * dr, 0.055 * R) * big * relief;
-      rr = Math.min(0.2, (h / 0.15) / R * (0.8 + 0.4 * vrng.next()));
+      h = softcap(9000 * gScale * s.volcanoScale * dr, 0.055 * capK * R) * big * relief;
+      rr = Math.min(0.2 * hs, (h / 0.15) / R * (0.8 + 0.4 * vrng.next()));
     } else {
-      h = softcap(3000 * gScale * s.volcanoScale * dr, 0.03 * R) * big * relief;
-      rr = Math.min(0.12, (h / 0.1) / R);
+      h = softcap(3000 * gScale * s.volcanoScale * dr, 0.03 * capK * R) * big * relief;
+      rr = Math.min(0.12 * hs, (h / 0.1) / R);
     }
     if (h <= 0) continue;
     rr = Math.max(rr, 0.01);
@@ -532,8 +599,8 @@ export function planWorld(p: GenParams): WorldPlan {
   const nBlocks = arch.blocks ? Math.round(between(vrng, arch.blocks)) : 0;
   for (let i = 0; i < nBlocks; i++) {
     const c = randomUnit(vrng);
-    const h = softcap(17000 * Math.pow(gScale, 0.4) * dr * (0.5 + 0.5 * vrng.next()), 0.05 * R) * relief;
-    volcanoes.push({ x: c[0], y: c[1], z: c[2], r: 0.05 + 0.06 * vrng.next(), h, style: 'block', caldera: vrng.next() * Math.PI * 2, flowR: 1, name: makeName(nameRng) + ' Mons' });
+    const h = softcap(22000 * Math.pow(gScale, 0.4) * dr * (0.5 + 0.5 * vrng.next()), 0.05 * capK * R) * relief;
+    volcanoes.push({ x: c[0], y: c[1], z: c[2], r: (0.05 + 0.06 * vrng.next()) * hs, h, style: 'block', caldera: vrng.next() * Math.PI * 2, flowR: 1, name: makeName(nameRng) + ' Mons' });
   }
 
   // --- rifts, canyons, graben, fissures ---
@@ -550,8 +617,8 @@ export function planWorld(p: GenParams): WorldPlan {
     } else { from = randomUnit(trng); start = offsetDir(from, 0.2, trng.next() * Math.PI * 2); }
     const n = norm3(...cross(from, start));
     const len = (0.7 + 0.6 * trng.next()) * Math.min(1.4, 0.7 + 0.3 * drama);
-    const w = (0.03 + 0.02 * trng.next()) * (0.8 + 0.2 * drama);
-    const depth = softcap((5000 + 3500 * trng.next()) * s.riftStrength * gRel * (0.6 + 0.4 * drama), 0.045 * R) * relief;
+    const w = (0.03 + 0.02 * trng.next()) * (0.8 + 0.2 * drama) * hs;
+    const depth = softcap((5000 + 3500 * trng.next()) * s.riftStrength * gRel * (0.6 + 0.4 * drama), 0.045 * capK * R) * relief;
     rifts.push({ sx: start[0], sy: start[1], sz: start[2], nx: n[0], ny: n[1], nz: n[2], len, w, depth, kind: 0, name: makeName(nameRng) + ' Chasma' });
     // Parallel chasmata.
     const extra = 1 + trng.int(3);
@@ -611,7 +678,7 @@ export function planWorld(p: GenParams): WorldPlan {
     const c = randomUnit(trng);
     scarpList.push({
       cx: c[0], cy: c[1], cz: c[2], rho: 0.2 + 0.45 * trng.next(), a0: trng.next() * Math.PI * 2, a1: 0.5 + 1.1 * trng.next(),
-      h: softcap((1200 + 2000 * trng.next()) * gRel * drama, 0.015 * R) * relief, w: 0.006 + 0.006 * trng.next(), back: 0.05 + 0.06 * trng.next(), face: trng.next() < 0.5 ? 1 : -1,
+      h: softcap((1200 + 2000 * trng.next()) * gRel * drama, 0.015 * capK * R) * relief, w: (0.006 + 0.006 * trng.next()) * hs, back: (0.05 + 0.06 * trng.next()) * hs, face: trng.next() < 0.5 ? 1 : -1,
     });
   }
 
@@ -646,11 +713,11 @@ export function planWorld(p: GenParams): WorldPlan {
   const capLat: [number, number] = capsAllowed
     ? [(90 - 9 * s.polarCaps * (1.1 + 0.3 * trng.next())) * Math.PI / 180, (90 - 7 * s.polarCaps * (0.8 + 0.3 * trng.next())) * Math.PI / 180]
     : [10, 10];
-  const capDome = capsAllowed ? softcap(2500 * gRel, 0.012 * R) * relief * Math.min(1.5, s.polarCaps) : 0;
+  const capDome = capsAllowed ? softcap(2500 * gRel, 0.012 * capK * R) * relief * Math.min(1.5, s.polarCaps) : 0;
 
   return {
-    p, archetype, arch, bulk, name, orbitDays, tidal, s, seaMode, seaValue, relief, gRel, drama, icy: arch.icy,
-    dichoAxis, dichoAmp, crustAmp, shapeAmp, basins, oldCraters, youngCraters, rises, volcanoes, rifts, scarpList, chaosList,
+    p, archetype, arch, bulk, name, orbitDays, tidal, s, seaMode, seaValue, relief, capK, distortion, figure, gRel, drama, icy: arch.icy,
+    dichoAxis, dichoAmp, crustAmp, basins, oldCraters, youngCraters, rises, volcanoes, rifts, scarpList, chaosList,
     palimpsests, grooves, cantaloupe, capLat, capDome, stripes,
   };
 }
@@ -726,7 +793,11 @@ export function buildHistory(plan: WorldPlan, st: SurfaceStats): HistoryEvent[] 
     ev.push({ gyrAgo: age - 0.06, stage: 'Primordial crust', text: `The crust freezes lopsided: one hemisphere stands ${km(plan.dichoAmp * 1.6)} above the other (crustal dichotomy).` });
   else
     ev.push({ gyrAgo: age - 0.06, stage: 'Primordial crust', text: plan.icy ? 'An ice shell freezes over a salty internal ocean.' : 'A thin crust floats to the top of the cooling magma ocean.' });
-  if (plan.shapeAmp > 3000) ev.push({ gyrAgo: age - 0.08, stage: 'Figure', text: `Too small to pull itself fully round: the figure keeps ${km(plan.shapeAmp)} lumps.` });
+  {
+    const e = plan.figure.e, m = (e[0] + e[1] + e[2]) / 3;
+    const ax = e.map((v) => 2 * (R + (v - m) / 1000)).sort((a, c) => c - a);
+    if ((ax[0] - ax[2]) / (2 * R) > 0.02) ev.push({ gyrAgo: age - 0.08, stage: 'Figure', text: `${plan.distortion > 1.2 ? 'Never pulled itself round' : 'Too stiff to relax fully round'}: the body stays a lumpy triaxial ${fmt(ax[0])} × ${fmt(ax[1])} × ${fmt(ax[2])} km${plan.figure.blobs.length > 2 ? ', with broad lobes and dents' : ''}.` });
+  }
   if (plan.basins.length > 0) {
     const big = plan.basins[0];
     ev.push({ gyrAgo: Math.min(age - 0.1, 4.1), stage: 'Giant impacts', text: `${plan.basins.length} giant impact${plan.basins.length > 1 ? 's' : ''} carve multi-ring basins; ${big.name} spans ${fmt(big.r * 2 * R)} km (${Math.round((big.r * 2 * R) / (2 * R) * 100)}% of the diameter), ${km(big.depth)} deep${big.peak > 0 ? `, with a ${km(big.peak)} central peak` : ''}.${plan.chaosList.some((c) => c.r > 0.12) ? ' Seismic waves focus at its antipode and shatter the ground into chaos.' : ''}` });

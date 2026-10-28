@@ -100,6 +100,9 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
       const n2 = noise.fbm(px * 31 - 9.1, py * 31 + 4.4, pz * 31 - 2.2, 3);
       const isSea = sea !== 'none' && h < 0;
       let temp = surfaceTemperature(plan, lat, h);
+      // Active lava lakes in calderas above the lava-sea level (on edifices / figure highs): hot, unit LAVA_LAKE.
+      const hotCaldera = sea === 'lava' && !isSea && vkind[idx] === VK.CALDERA;
+      if (hotCaldera) temp = 1250;
 
       const ejecta = featA[idx * 4] / 255;
       const edifice = featA[idx * 4 + 1] / 255;
@@ -194,7 +197,7 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
 
       // --- geologic unit ---
       let unit: number;
-      if (isSea) unit = sea === 'lava' ? U.LAVA_LAKE : sea === 'ice' ? U.FROZEN_SEA : U.SEA;
+      if (isSea || hotCaldera) unit = sea === 'lava' ? U.LAVA_LAKE : sea === 'ice' ? U.FROZEN_SEA : U.SEA;
       else if (cap > 0.5) unit = U.POLAR_CAP;
       else if (rayV === 255) unit = U.FACULA;
       else if (vk === VK.CALDERA) unit = U.FLOWS;

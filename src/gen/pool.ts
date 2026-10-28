@@ -151,6 +151,7 @@ export async function generateInWorkers(
     const input: CubeStageInput = {
       height: assembleCube(faces.map((f) => f.height), (k) => new Float32Array(k)),
       young: assembleCube(faces.map((f) => f.young), (k) => new Float32Array(k)),
+      figure: assembleCube(faces.map((f) => f.figure), (k) => new Float32Array(k)),
       vkind: vkind.slice(),
     };
     timings.terrain = now() - t0;

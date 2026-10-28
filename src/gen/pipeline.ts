@@ -64,6 +64,8 @@ export function assembleCube<A extends Float32Array | Uint8Array>(faces: A[], ma
 export interface CubeStageInput {
   height: Float32Array;
   young: Float32Array;
+  /** Non-spherical figure (m), from the terrain stage. */
+  figure: Float32Array;
   vkind: Uint8Array;
 }
 
@@ -164,10 +166,13 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
   }
   // --- young craters on top of the maria ---
   for (let i = 0; i < total; i++) h[i] += inp.young[i];
-  // --- figure limit: soft-compress stacked relief (rise + shield + dichotomy): at most +7.5% / -5.5% of the radius about the mean ---
+  // --- feature limit: soft-compress stacked feature relief (rise + shield + dichotomy + basins). Scales with the
+  // wildness cap factor and the relief slider: +7.5% / -5.5% of R at capK·relief = 1, at most +20% / -17%. ---
+  const Rm = plan.bulk.radiusKm * 1000;
   {
-    const Rm = plan.bulk.radiusKm * 1000;
-    const kUp = 0.045 * Rm, cUp = 0.03 * Rm, kDn = -0.035 * Rm, cDn = 0.02 * Rm;
+    const L = plan.capK * plan.relief;
+    const Lu = Math.min(L, 0.2 / 0.075), Ld = Math.min(L, 0.17 / 0.055);
+    const kUp = 0.045 * Lu * Rm, cUp = 0.03 * Lu * Rm, kDn = -0.035 * Ld * Rm, cDn = 0.02 * Ld * Rm;
     for (let i = 0; i < total; i++) {
       const v = h[i];
       if (v > kUp) { const e = v - kUp; h[i] = kUp + (cUp * e) / (e + cUp); }
@@ -175,6 +180,10 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
     }
   }
   timings.flood = now() - t0;
+
+  // --- figure: triaxial stretch + lumps on top of the (limited) features; seas and the datum see the total ---
+  for (let i = 0; i < total; i++) h[i] += inp.figure[i];
+  if (pre) for (let i = 0; i < total; i++) pre[i] += inp.figure[i];
 
   // --- sea level ---
   t0 = now();
@@ -189,15 +198,23 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
     const cov = plan.seaMode === 'coverage' ? plan.seaValue : 0.03;
     const floodCov = plan.s.floodLevel > 0.002 ? plan.s.floodLevel : 1;
     const [Lp] = weightedQuantiles(pre, N, [Math.min(cov, 0.8 * floodCov)], -Infinity, Infinity, areaW);
-    level = Number.isFinite(Lf) ? Math.min(Lf, Lp) - 120 * plan.relief : Lp;
+    // Lp is on the figure-included topography; the flood level Lf is not (the maria follow the figure).
+    level = Lp - (Number.isFinite(Lf) ? 120 * plan.relief : 0);
     const deep = 1500 * plan.relief;
     for (let i = 0; i < total; i++) {
       if (pre[i] < Lp) h[i] = Math.min(h[i], level - 25 * plan.relief - 200 * plan.relief * smoothstep(Lp, Lp - deep, pre[i]));
       else if (h[i] < level + 20) h[i] = level + 20;
     }
   } else level = solveLevel();
-  // Lava lakes sit in the patera calderas.
-  if (seaKind === 'lava') for (let i = 0; i < total; i++) if (inp.vkind[i] === VK.CALDERA) h[i] = Math.min(h[i], level - 250 * plan.relief);
+  // Lava lakes sit in the patera calderas. Calderas high above the lava level (on edifices or figure highs) are not
+  // dragged down to it (that dug 1-texel shafts tens of km deep); the forcing fades out 2.5–5 km·relief above it.
+  if (seaKind === 'lava') {
+    const tgt = level - 250 * plan.relief, d0 = 2500 * plan.relief, d1 = 5000 * plan.relief;
+    for (let i = 0; i < total; i++) {
+      if (inp.vkind[i] !== VK.CALDERA || h[i] <= tgt) continue;
+      h[i] -= (h[i] - tgt) * smoothstep(d1, d0, h[i] - tgt);
+    }
+  }
 
   // --- dunes: sand seas in the lowlands (needs wind) ---
   if (plan.s.dunes > 0.01) {
@@ -236,7 +253,15 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
   // --- datum: sea level (exact coverage / volume) or the mean radius ---
   t0 = now();
   if (!pre) level = solveLevel();
-  for (let i = 0; i < total; i++) h[i] -= level;
+  // Renderer contract: the displaced cube sphere stays star-shaped well inside ±25% of R. Smooth clamp beyond
+  // ±20% (asymptote ±24.5%), after the datum shift so the stats see it. Sea texels (h < 0, ≥ −20% R) are untouched.
+  const kC = 0.2 * Rm, cC = 0.045 * Rm;
+  for (let i = 0; i < total; i++) {
+    const v = h[i] - level;
+    if (v > kC) { const e = v - kC; h[i] = kC + (cC * e) / (e + cC); }
+    else if (v < -kC) { const e = -kC - v; h[i] = -kC - (cC * e) / (e + cC); }
+    else h[i] = v;
+  }
   refillGutters(h, N);
 
   // --- flow routing, river wetness, closed-basin deposits ---
@@ -377,6 +402,7 @@ export function* pipelineSteps(params: Partial<GenParams>, onProgress?: Progress
   const cubeIn: CubeStageInput = {
     height: assembleCube(faces.map((f) => f.height), (k) => new Float32Array(k)),
     young: assembleCube(faces.map((f) => f.young), (k) => new Float32Array(k)),
+    figure: assembleCube(faces.map((f) => f.figure), (k) => new Float32Array(k)),
     vkind,
   };
   timings.terrain = now() - t0;

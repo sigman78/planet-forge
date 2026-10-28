@@ -59,11 +59,44 @@ describe('generator', () => {
     expect(worstGutter).toBeLessThanOrEqual(4);
   });
 
-  it.each(ARCHS)('%s: heights are finite and the total relief stays within 13%% of the radius', (arch) => {
+  // Renderer contract: the displaced cube sphere stays star-shaped, heights within ±25% of R in any setting.
+  it.each(ARCHS)('%s: heights are finite and stay within ±25%% of the radius', (arch) => {
     const pd = planet(arch);
     for (let i = 0; i < pd.height.length; i++) expect(Number.isFinite(pd.height[i])).toBe(true);
-    expect(pd.maxHeight - pd.minHeight).toBeLessThan(0.13 * pd.radius);
-    expect(pd.maxHeight - pd.minHeight).toBeGreaterThan(500);
+    expect(pd.maxHeight).toBeLessThan(0.25 * pd.radius);
+    expect(pd.minHeight).toBeGreaterThan(-0.25 * pd.radius);
+    expect(pd.maxHeight - pd.minHeight).toBeGreaterThan(0.02 * pd.radius);
+  });
+
+  it.each(['rust', 'sulfur', 'cryo', 'wild'])('%s: extreme drama / relief / distortion stays within ±25%% of the radius', (arch) => {
+    const pd = generatePlanetSync(presetParams(arch, { seed: 2, resolution: 32, drama: 2, reliefScale: 3, distortion: 2 }));
+    for (let i = 0; i < pd.height.length; i++) expect(Number.isFinite(pd.height[i])).toBe(true);
+    expect(pd.maxHeight).toBeLessThan(0.25 * pd.radius);
+    expect(pd.minHeight).toBeGreaterThan(-0.25 * pd.radius);
+  });
+
+  it('the relief slider and drama move the relief (no hidden figure limit)', () => {
+    const rel = (o: object) => {
+      const pd = generatePlanetSync(presetParams('basalt', { seed: 3, resolution: 32, ...o }));
+      return (pd.maxHeight - pd.minHeight) / pd.radius;
+    };
+    const base = rel({});
+    expect(rel({ reliefScale: 0.5 })).toBeLessThan(0.65 * base);
+    expect(rel({ reliefScale: 2 })).toBeGreaterThan(1.5 * base);
+    expect(rel({ drama: 0 })).toBeLessThan(0.75 * base);
+    expect(rel({ drama: 2 })).toBeGreaterThan(1.3 * base);
+  });
+
+  it('wild worlds are visibly non-spherical; young ice shells stay rounder', () => {
+    const axisSpread = (preset: string, seed: number) => {
+      const pl = worldPlan(presetParams(preset, { seed, resolution: 32 }));
+      const e = pl.figure.e;
+      return (Math.max(...e) - Math.min(...e)) / (pl.bulk.radiusKm * 1000);
+    };
+    for (const seed of [1, 2, 3]) {
+      expect(axisSpread('wild', seed)).toBeGreaterThan(0.05);
+      expect(axisSpread('ice shell', seed)).toBeLessThan(axisSpread('wild', seed) * 0.5);
+    }
   });
 
   it.each(ARCHS)('%s: fills PlanetInfo, no water sea, sea coverage under 10%%', (arch) => {
@@ -169,7 +202,7 @@ describe('face-edge continuity', () => {
     return (fc.face * T + py) * T + px;
   }
 
-  it.each(['rust', 'cinder', 'sulfur', 'ice shell', 'old ice', 'cryo'])('%s: height and splat continuous across face edges', (arch) => {
+  it.each(['rust', 'cinder', 'sulfur', 'ice shell', 'old ice', 'cryo', 'wild'])('%s: height and splat continuous across face edges', (arch) => {
     const n = 96;
     const pd = planet(arch, 59329, n);
     const T = n + 2, H = pd.height;

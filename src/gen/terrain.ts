@@ -1,13 +1,14 @@
 // Terrain stage (per cube face, gutters included): replays the formation history of the WorldPlan onto the face.
-//   crust (dichotomy, low-degree thickness, lumpy figure) -> giant basins -> old craters -> rises -> volcanoes
+//   crust (dichotomy, low-degree thickness) -> giant basins -> old craters -> rises -> volcanoes
 //   -> rifts / graben / fissures -> scarps -> ice tectonics (lineae, grooves) -> chaos / cantaloupe -> polar domes.
 // Young craters go into a separate delta (added after the flood basalts in the cube stage).
-// Heights are metres relative to the undisturbed mean radius (the datum is fixed later).
+// Heights are metres relative to the undisturbed mean radius (the datum is fixed later). The non-spherical figure
+// (world.ts figureAt) goes into its own layer, added in the cube stage after the flood basalts and the feature limit.
 
 import { faceToDir, texelToS, unwarp, FACE_BASIS } from '../core/cube.ts';
 import type { Vec3 } from '../core/cube.ts';
 import { Noise3, Rng, smoothstep } from './noise.ts';
-import { CRATER_STRIDE } from './world.ts';
+import { CRATER_STRIDE, figureAt } from './world.ts';
 import type { WorldPlan } from './world.ts';
 
 /** Volcano kind per texel (FaceTerrain.vkind). */
@@ -24,6 +25,8 @@ export const TECT = { GROOVES: 40, LINEAE: 60, FOSSAE: 100, FISSURE: 160, CANYON
 export interface FaceTerrain {
   height: Float32Array;
   young: Float32Array;
+  /** Non-spherical figure (m), added after the flood basalts and the feature limit. */
+  figure: Float32Array;
   featA: Uint8Array;
   featB: Uint8Array;
   vkind: Uint8Array;
@@ -33,6 +36,8 @@ export interface TerrainContext {
   plan: WorldPlan;
   N: number;
   noise: Noise3;
+  /** Noise for the figure lumps (separate stream so the figure is independent of the crust). */
+  figNoise: Noise3;
   octRough: number;
   /** Scarp tangent frames (e1, e2 per scarp, 6 floats). */
   scarpFrames: Float64Array;
@@ -91,7 +96,7 @@ export function prepareTerrain(plan: WorldPlan): TerrainContext {
     ex *= l; ey *= l; ez *= l;
     fr.set([ex, ey, ez, s.cy * ez - s.cz * ey, s.cz * ex - s.cx * ez, s.cx * ey - s.cy * ex], i * 6);
   });
-  return { plan, N, noise: new Noise3(plan.p.seed), octRough: octavesFor(8, N, 6), scarpFrames: fr, lineae: planLineae(plan) };
+  return { plan, N, noise: new Noise3(plan.p.seed), figNoise: new Noise3(plan.p.seed ^ 0xf16e), octRough: octavesFor(8, N, 6), scarpFrames: fr, lineae: planLineae(plan) };
 }
 
 const clampB = (v: number) => (v <= 0 ? 0 : v >= 1 ? 255 : Math.round(v * 255));
@@ -104,6 +109,7 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
   const low = new Float32Array(TT);
   const det = new Float32Array(TT);
   const young = new Float32Array(TT);
+  const figure = new Float32Array(TT);
   const featA = new Uint8Array(TT * 4);
   const featB = new Uint8Array(TT * 4);
   const vkind = new Uint8Array(TT);
@@ -112,6 +118,8 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
 
   const ax = plan.dichoAxis;
   const icy = plan.icy;
+  // Domain warp of the crust grows with drama: twisted, sheared ridge belts on wild worlds.
+  const wk = 0.5 + 0.5 * Math.min(2, plan.drama);
   for (let y = 0; y < T; y++) {
     const t = texelToS(y, N);
     for (let x = 0; x < T; x++) {
@@ -119,13 +127,13 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
       const i = y * T + x;
       const px = d[0], py = d[1], pz = d[2];
       dirs[i * 3] = px; dirs[i * 3 + 1] = py; dirs[i * 3 + 2] = pz;
+      figure[i] = figureAt(plan.figure, ctx.figNoise, px, py, pz);
 
       // --- primordial crust ---
       const w = n.warp3(px * 1.3, py * 1.3, pz * 1.3, 2);
-      const dd = px * ax[0] + py * ax[1] + pz * ax[2] + 0.35 * w[0];
+      const dd = px * ax[0] + py * ax[1] + pz * ax[2] + 0.35 * wk * w[0];
       let h = plan.dichoAmp * 0.8 * Math.tanh(2.6 * dd);
-      h += plan.crustAmp * n.fbm(px * 1.4 + 0.3 * w[1] + 5.1, py * 1.4 + 0.3 * w[2], pz * 1.4 - 2.2, 4);
-      if (plan.shapeAmp > 0) h += plan.shapeAmp * 2 * n.fbm(px * 0.75 - 7.7, py * 0.75 + 3.3, pz * 0.75 + 1.1, 2);
+      h += plan.crustAmp * n.fbm(px * 1.4 + 0.3 * wk * w[1] + 5.1, py * 1.4 + 0.3 * wk * w[2], pz * 1.4 - 2.2 + 0.3 * wk * w[0], 4);
 
       // --- giant basins (multi-ring) ---
       let floorA = 0, rimB = 0;
@@ -346,7 +354,7 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
     else if (cantaloupe > 0.5) featB[i * 4 + 1] = 100;
     if (pal > 0.5 && featA[i * 4 + 3] < 128) featA[i * 4 + 3] = 120;
   }
-  return { height, young, featA, featB, vkind };
+  return { height, young, figure, featA, featB, vkind };
 }
 
 // ---- rasterised features ------------------------------------------------------------------------
@@ -482,6 +490,8 @@ function rasterVolcanoes(ctx: TerrainContext, face: number, low: Float32Array, d
     const el = 1 / Math.hypot(ex, ey, ez);
     ex *= el; ey *= el; ez *= el;
     const fx = v.y * ez - v.z * ey, fy = v.z * ex - v.x * ez, fz = v.x * ey - v.y * ex;
+    // Crater / caldera walls never get steeper than a ~2.5-texel ramp (tall edifices would otherwise leave 1-texel pits).
+    const ramp = (2.5 * (Math.PI / 2 / N)) / v.r;
     for (let y = _box.y0; y <= _box.y1; y++) {
       for (let x = _box.x0; x <= _box.x1; x++) {
         const idx = y * T + x;
@@ -503,7 +513,7 @@ function rasterVolcanoes(ctx: TerrainContext, face: number, low: Float32Array, d
             prof = xx < 0.88 ? 1 - Math.pow(xx, 1.5) : 0.174 * smoothstep(0.94, 0.88, xx);
             prof *= 1 - 0.07 * n.ridged(dx * 70 + c, dy * 70, dz * 70, 2, 2) * xx;
             // Nested summit calderas.
-            prof -= 0.09 * smoothstep(v.caldera, v.caldera * 0.75, x0);
+            prof -= 0.09 * smoothstep(v.caldera, Math.min(v.caldera * 0.75, v.caldera - ramp), x0);
             prof -= 0.05 * smoothstep(v.caldera * 0.6, v.caldera * 0.4, Math.abs(x0 - v.caldera * 0.5));
             cover = smoothstep(1.0, 0.85, xx);
             flow = smoothstep(v.flowR, v.flowR * 0.75, xl) * (xl > 0.8 ? 1 : 0);
@@ -511,7 +521,7 @@ function rasterVolcanoes(ctx: TerrainContext, face: number, low: Float32Array, d
             break;
           }
           case 'cone': {
-            prof = Math.pow(Math.max(0, 1 - x0), 1.15) - 0.25 * smoothstep(0.12, 0.08, x0);
+            prof = Math.pow(Math.max(0, 1 - x0), 1.15) - 0.25 * smoothstep(Math.max(0.12, 0.08 + ramp), 0.08, x0);
             cover = smoothstep(1.0, 0.8, x0);
             flow = smoothstep(v.flowR, v.flowR * 0.8, xl) * (xl > 0.7 ? 1 : 0);
             break;
@@ -524,7 +534,7 @@ function rasterVolcanoes(ctx: TerrainContext, face: number, low: Float32Array, d
           case 'cryo': {
             // Steep-sided dome (Ahuna-like, but huge) with a summit pit and broad cryolava lobes.
             const xx = x0 * (1 + 0.1 * lob);
-            prof = Math.pow(Math.max(0, 1 - Math.pow(xx, 3)), 1.4) * (1 - 0.15 * xx) - 0.12 * smoothstep(v.caldera, v.caldera * 0.6, x0);
+            prof = Math.pow(Math.max(0, 1 - Math.pow(xx, 3)), 1.4) * (1 - 0.15 * xx) - 0.12 * smoothstep(v.caldera, Math.min(v.caldera * 0.6, v.caldera - ramp), x0);
             prof *= 1 - 0.05 * n.ridged(dx * 90, dy * 90 + c, dz * 90, 2, 2) * xx;
             const lobes = smoothstep(v.flowR, v.flowR * 0.7, xl);
             flow = lobes * (xx > 0.85 ? 1 : 0);
@@ -537,7 +547,8 @@ function rasterVolcanoes(ctx: TerrainContext, face: number, low: Float32Array, d
             // Caldera depression with a lava-lake floor, low shield, dark lobate flows, plume ring deposits.
             const cal = v.caldera;
             const xx = x0 * (1 + 0.15 * lob);
-            if (xx < cal) prof = -1 + 0.05 * smoothstep(cal * 0.85, cal, xx);
+            // Steep but continuous caldera wall up to the low shield.
+            if (xx < cal) prof = -1 + (1.04 + 0.12 * (1 - cal)) * smoothstep(Math.min(cal * 0.85, cal - ramp), cal, xx);
             else if (xx < 1) prof = 0.12 * (1 - xx) + 0.04;
             else prof = 0.04 * smoothstep(1.2, 1.0, xx);
             if (xx < cal * 0.8) kind = VK.CALDERA;
@@ -554,8 +565,9 @@ function rasterVolcanoes(ctx: TerrainContext, face: number, low: Float32Array, d
             // Tilted mesa with steep thrust scarps: plateau top, tilted along a random azimuth.
             const tilt = Math.cos(v.caldera) * (dx - v.x) + Math.sin(v.caldera) * (dz - v.z);
             const edge = x0 + 0.35 * n.fbm(dx * 18 + c, dy * 18, dz * 18, 3);
-            prof = smoothstep(1.0, 0.8, edge) * (0.65 + 0.35 * (tilt / v.r)) + 0.1 * n.ridged(dx * 60, dy * 60, dz * 60 + c, 3, 2) * smoothstep(1.0, 0.8, edge);
-            cover = smoothstep(1.0, 0.8, edge) * 0.6;
+            const top = smoothstep(1.0, 0.72, edge);
+            prof = top * (0.65 + 0.35 * (tilt / v.r)) + 0.1 * n.ridged(dx * 60, dy * 60, dz * 60 + c, 3, 2) * top;
+            cover = top * 0.6;
             kind = VK.BLOCK;
             break;
           }

@@ -25,7 +25,7 @@ void main() {
   vec3 rd = normalize(wp - ro);
   float sceneT = d >= 0.999999 ? 1e9 : length(wp - ro);
 
-  vec2 hit = raySphere(ro, rd, uAtmoRadius);
+  vec2 hit = raySphere(ro, rd, uAtmoRadius + uFigureMax);
   if (hit.x > hit.y || hit.y < 0.0) { gl_FragColor = vec4(col, 1.0); return; }
   // Rays without scene depth stop at the lowest-terrain sphere (never above real ground, so low
   // cameras in basins do not see a fake dark horizon).
@@ -63,7 +63,7 @@ void main() {
   // Ground haze: march only the part of the ray inside the haze layer.
   float hazeOD = 0.0;
   if (uHaze > 0.0) {
-    vec2 hh = raySphere(ro, rd, min(uPlanetRadius + uHazeH * 6.0, uAtmoRadius));
+    vec2 hh = raySphere(ro, rd, min(uPlanetRadius + uFigureMax + uHazeH * 6.0, uAtmoRadius + uFigureMax));
     float a0 = max(hh.x, 0.0), a1 = min(hh.y, min(sceneT, ground.x > 0.0 && ground.x < ground.y ? ground.x : 1e9));
     if (a1 > a0) {
       float hdt = (a1 - a0) / 16.0;
@@ -71,7 +71,7 @@ void main() {
       for (int i = 0; i < 16; i++) {
         vec3 p = ro + rd * (a0 + (float(i) + dither) * hdt);
         float r = length(p);
-        float hz = max(r - uPlanetRadius, max(uGroundRadius - uPlanetRadius, -0.7 * uHazeH));
+        float hz = max(r - uPlanetRadius - figureKm(p / r), -0.7 * uHazeH);
         float dz = exp(-hz / uHazeH) * hdt;
         hazeOD += dz;
         // Sun through the haze: planet shadow + airmass approximation instead of a nested march.

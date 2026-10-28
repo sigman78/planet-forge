@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { PlanetData } from '../core/types.ts';
 import { createCubeSphereGeometry } from './geometry.ts';
 import { createPlanetTextures, type PlanetTextures } from './planetTextures.ts';
+import { computeFigureM, createFigureTexture, updateFigureTexture } from './figure.ts';
 import type { TerrainTextureSet } from './terrainTextures.ts';
 
 import cubeGlsl from '../shaders/cube.glsl?raw';
@@ -43,6 +44,9 @@ export function createSharedUniforms() {
     uTime: u(0),
     uSkyAmbient: u(new THREE.Color(0.1, 0.16, 0.28)),
     uAmbient: u(0.003),
+    tFigure: u<THREE.Texture>(createFigureTexture()),
+    uFigureOn: u(0),
+    uFigureMax: u(0),
     uFillDir: u(new THREE.Vector3(-1, 0.2, 0).normalize()),
     uFillColor: u(new THREE.Color(0, 0, 0)),
   };
@@ -154,6 +158,7 @@ export class PlanetView {
   private meshSegments = 0;
   private geoCache = new Map<number, THREE.BufferGeometry>();
   private placeholder: THREE.DataArrayTexture;
+  private figureM: Float32Array | null = null;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
@@ -203,6 +208,8 @@ export class PlanetView {
         uFineDetail: u(1),
         uLayerStyle: u(LAYER_STYLE.map((v) => new THREE.Vector4(...v))),
         uFinePits: u(1),
+        uLavaColor: u(new THREE.Color(DEFAULT_LOOK.lavaColor)),
+        uLavaGlow: u(0),
         uShadows: u(1),
         uSpecular: u(0.5),
         uRoughMin: u(0.65),
@@ -301,6 +308,7 @@ export class PlanetView {
     U.tClimate.value = this.tex.climate;
     U.tAO.value = this.tex.ao;
     U.uN.value = data.N;
+    this.figureM = computeFigureM(data);
     this.shared.uPlanetRadius.value = data.radius / 1000;
     const colors = U.uUnitColors.value as THREE.Color[];
     for (const unit of data.info?.units ?? []) {
@@ -317,6 +325,11 @@ export class PlanetView {
       const minH = this.data.minHeight;
       const minKm = (minH < 0 ? minH * look.seaFloorScale : minH) * 0.001 * look.heightExaggeration;
       this.shared.uGroundRadius.value = this.data.radius / 1000 + Math.min(minKm, 0) - 0.3;
+    }
+    if (this.figureM) {
+      const S = this.shared;
+      S.uFigureMax.value = updateFigureTexture(S.tFigure.value as THREE.DataTexture, this.figureM, 0.001 * look.heightExaggeration, look.seaFloorScale);
+      S.uFigureOn.value = 1;
     }
     U.uDetailAmp.value = look.detailAmp;
     U.uDetailScale.value = look.detailScale;
@@ -361,6 +374,9 @@ export class PlanetView {
     O.uFoam.value = look.foam;
     (O.uLavaColor.value as THREE.Color).set(look.lavaColor);
     O.uLavaGlow.value = look.lavaGlow;
+    // Molten calderas on land glow only on lava worlds.
+    (U.uLavaColor.value as THREE.Color).set(look.lavaColor);
+    U.uLavaGlow.value = look.oceanMode === 1 ? look.lavaGlow : 0;
     this.ocean.visible = look.oceanMode !== 3 && look.debug === 0;
   }
 
