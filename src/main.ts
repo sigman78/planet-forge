@@ -2,12 +2,13 @@ import * as THREE from 'three';
 import { Pane, type FolderApi } from 'tweakpane';
 import * as EssentialsPlugin from '@tweakpane/plugin-essentials';
 import { sampleDir } from './core/cube.ts';
-import type { PlanetBulk, PlanetData, ResolvedParams } from './core/types.ts';
+import type { PlanetBulk, PlanetData, ResolvedParams, Poi } from './core/types.ts';
 import { DEFAULT_PARAMS, GEN_PRESETS, PARAM_SCHEMA, presetParams, type GenParams } from './gen/params.ts';
 import { generate, previewWorld } from './app/generate.ts';
 import { loadCached, storeCached, clearCache } from './app/cache.ts';
 import { Hologram } from './render/hologram.ts';
 import { Captions } from './app/captions.ts';
+import { Tour } from './app/tour.ts';
 import { ScanReadout } from './app/scan.ts';
 import { PoiLabels } from './app/pois.ts';
 import { DEFAULT_ENV, applyLookHints, archetypeLabel, planetName, MIN_ATMO_DENSITY, type EnvParams } from './app/presets.ts';
@@ -175,11 +176,25 @@ async function main() {
   let regenTimer = 0;
   const captions = new Captions($('captions'));
   const poiLabels = new PoiLabels($('pois'));
+  let pois: Poi[] = [];
+  const tour = new Tour({
+    controller,
+    radius: () => controller.radius,
+    sunDir: () => shared.uSunDir.value,
+    pois: () => pois,
+    caption: (kind, title, text) => captions.play([{ when: kind, title, text }], 0),
+    labels: (on) => ($('pois').style.visibility = on ? '' : 'hidden'),
+    done: () => {
+      captions.stop();
+      tourBtn.classList.remove('active');
+    },
+  });
   /** overlay: keep the current world on screen under a faint hologram (live slider tweaks). */
   async function regenerate(overlay = false) {
     abort?.abort();
     const ac = new AbortController();
     abort = ac;
+    tour.stop();
     captions.stop();
     const t0 = performance.now();
     const params = structuredClone(gen);
@@ -228,7 +243,8 @@ async function main() {
       history.replaceState(null, '', `#${encodeURIComponent(state.preset)}/${params.seed}`);
       view.setPlanet(planet);
       view.group.visible = true;
-      poiLabels.set(planet.info?.pois ?? []);
+      pois = planet.info?.pois ?? [];
+      poiLabels.set(pois);
       holo.finish(planet.radius / 1000);
       const R = planet.radius / 1000;
       const prevR = controller.radius;
@@ -336,6 +352,17 @@ async function main() {
     b.onclick = () => loadPreset(key);
     presetBar.appendChild(b);
   }
+  const tourBtn = document.createElement('button');
+  tourBtn.className = 'tour';
+  tourBtn.textContent = '▶ Tour';
+  tourBtn.title = 'Fly a tour of this world (P). Any drag or scroll stops it.';
+  function toggleTour() {
+    if (!view.group.visible) return;
+    tour.toggle();
+    tourBtn.classList.toggle('active', tour.active);
+  }
+  tourBtn.onclick = toggleTour;
+  presetBar.appendChild(tourBtn);
 
   // ---- Tweakpane -------------------------------------------------------------------------------
   const pane = new Pane({ container: $('pane'), title: 'Planet Forge' });
@@ -542,6 +569,7 @@ async function main() {
     }
     if (e.key === 't' || e.key === 'T') captions.toggle();
     if (e.key === 'l' || e.key === 'L') poiLabels.enabled = !poiLabels.enabled;
+    if (e.key === 'p' || e.key === 'P') toggleTour();
     const dv = Object.values(DEBUG_VIEWS);
     if (/^[0-9]$/.test(e.key)) {
       look.debug = dv[Number(e.key)] ?? 0;
@@ -601,7 +629,7 @@ async function main() {
 
   // Expose for debugging in the console.
   Object.assign(window as unknown as Record<string, unknown>, {
-    forge: { renderer, scene, camera, view, pipeline, controller, sunShadow, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
+    forge: { renderer, scene, camera, view, pipeline, controller, sunShadow, tour, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
   });
 }
 

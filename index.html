@@ -51,6 +51,7 @@
       #presets button { font: 600 11px 'Chakra Petch', sans-serif; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg); background: var(--panel); border: 1px solid var(--line); padding: 7px 12px; border-radius: 2px; cursor: pointer; backdrop-filter: blur(6px); }
       #presets button:hover { border-color: var(--accent2); }
       #presets button.active { border-color: var(--accent); color: var(--accent); }
+      #presets button.tour { margin-left: 14px; color: var(--accent2); }
       #pane { position: fixed; right: 12px; top: 12px; width: 330px; max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: thin; }
       #pane::-webkit-scrollbar { width: 6px; }
       #pane::-webkit-scrollbar-thumb { background: var(--line); }
@@ -78,7 +79,7 @@
     <div id="pane"></div>
     <div id="pois"></div>
     <div id="captions"></div>
-    <div id="help"><kbd>drag</kbd> orbit · <kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> look · <kbd>R</kbd> new seed · <kbd>H</kbd> hide UI · <kbd>T</kbd> captions · <kbd>L</kbd> labels · <kbd>1-9</kbd> debug views</div>
+    <div id="help"><kbd>drag</kbd> orbit · <kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> look · <kbd>R</kbd> new seed · <kbd>H</kbd> hide UI · <kbd>T</kbd> captions · <kbd>L</kbd> labels · <kbd>P</kbd> tour · <kbd>1-9</kbd> debug views</div>
     <div id="boot">FORGING…</div>
     <script type="module" src="/src/main.ts"></script>
   </body>

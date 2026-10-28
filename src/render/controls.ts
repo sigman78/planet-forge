@@ -210,6 +210,19 @@ export class PlanetCameraController {
 
   private dir = new THREE.Vector3();
 
+  /** Automatic pitch (radians below the local horizontal): the planet centre when far, the horizon when low. */
+  private autoPitch(r: number, ground: number) {
+    const t = this.autoTilt ? THREE.MathUtils.smoothstep(Math.log(r - ground), Math.log(15), Math.log(1500)) : 1;
+    // Horizon dip plus a little, so the low view still shows some ground.
+    const horizonPitch = Math.acos(Math.min(ground / r, 1)) + 0.12;
+    return THREE.MathUtils.lerp(horizonPitch, Math.PI / 2, t);
+  }
+
+  /** userPitch that gives the camera an absolute pitch (radians below the local horizontal) at `altitude`. */
+  userPitchFor(pitch: number, altitude: number, ground = this.radius) {
+    return this.autoPitch(this.radius + altitude, ground) - pitch;
+  }
+
   update(dt: number) {
     if (this.flight) {
       // Scripted flight drives the view directly; the target follows, so nothing eases afterwards.
@@ -272,12 +285,8 @@ export class PlanetCameraController {
     // Forward tangent rotated by heading.
     const fwd = north.clone().multiplyScalar(Math.cos(this.heading)).addScaledVector(east, Math.sin(this.heading));
 
-    // Pitch: 90deg (looking at the planet centre) when far, toward the horizon when low.
     const altAboveGround = r - ground;
-    const t = this.autoTilt ? THREE.MathUtils.smoothstep(Math.log(altAboveGround), Math.log(15), Math.log(1500)) : 1;
-    // Horizon dip angle so "horizon" view still shows a little ground.
-    const horizonPitch = Math.acos(Math.min(ground / r, 1)) + 0.12;
-    let pitch = THREE.MathUtils.lerp(horizonPitch, Math.PI / 2, t) - this.userPitch;
+    let pitch = this.autoPitch(r, ground) - this.userPitch;
     pitch = THREE.MathUtils.clamp(pitch, -0.3, Math.PI / 2);
     this.pitch = pitch;
     this.groundAlt = altAboveGround;
