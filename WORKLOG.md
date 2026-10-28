@@ -39,3 +39,38 @@ Newest entries at the bottom. Times are local.
     top-3 splat layers instead of 4.
   - Result with hex-tiling on: orbit 33 -> 66 fps, planet filling screen 30 -> 57, low 49 -> 78, ground 67 -> 94.
 - Atmosphere scale heights clamped below the shell height (generator hints gave a hard-edged halo).
+
+## 2026-10-28 04:00–05:40 — surface detail, light, haze, publish prep, presentation
+- **Fine relief:** sub-heightmap bump octaves (later replaced, see below).
+- **Ground haze:** a separate, dithered 16-step haze march inside R + 6H. Haze strength and height come from surface
+  pressure (k = (log10 p + 7) / 5): a faint exospheric hint on airless bodies, a dusty horizon on thin-air worlds,
+  tinted from the dust layer.
+- **Shadows and AO:** 24-step heightmap ray-march cast shadows (soft penumbra), a 2-scale cavity AO baked on the CPU
+  (summed-area tables), texture micro-shadowing, an opposition surge. Dry layers are matte (roughness floor, specular
+  scale); ice and salt stay glossy.
+- **Atmosphere vs. sub-datum terrain:** the ground sphere is now the lowest terrain (`uGroundRadius`), density continues
+  below the datum (capped at -0.7 H), and haze sun-occlusion uses the same sphere. Fixes the dark fake horizon and
+  basin whiteout.
+- **Publish prep:** base-relative asset URLs, Vite base `/planet-forge/` for build and preview, GitHub Pages workflow
+  (typecheck, tests, build, deploy).
+- **Detail styles (user: "dunes texture doesn't fit all", "detail horizon too close"):**
+  - The procedural relief is one spectrum (uDetailScale / 2.15^k) evaluated with analytic gradients (simplex with
+    derivatives, plus a cheap 2x2x2 Worley).
+  - Four styles: ridged, billowy, cracked, pitted. Landform octaves (geometry) follow the archetype; fine octaves
+    (normal only) follow the local material: dunes on sand, crack networks on ice and salt, lobes on basalt, craterlets
+    in regolith. Craterlets thin out where there is air.
+  - The macro normal uses the baked heightmap only. Detail fades at about 3 px per wavelength on the geometric-mean
+    footprint (the grazing long axis alone erased it near the camera), so it now reaches about 3x farther.
+- **Planet cache:** IndexedDB (localStorage is too small: about 25 MB per 512² world). Keyed by params plus a
+  build-time hash of the generator source, LRU with 6 entries, off in dev. `#archetype/seed` URLs make worlds
+  shareable and cache-friendly.
+- **Presentation (user ideas):**
+  - A faceted "cyber-space" hologram stands in while a world forges: it blinks, fills in with progress and dissolves
+    when the world lands. It replaces the loading screen and progress bar; during live slider tweaks it is a faint
+    overlay.
+  - Bulk facts decode into the HUD one by one like scan results while forging.
+  - The formation history plays as quiet film-style captions (T toggles).
+- **Night side:** planetshine fill from the parent giant (wrapped Lambert, about 1:8 vs. the sun) plus a higher space
+  ambient. The night side used to sit about 1000x below the day side and crushed to black under ACES.
+- **Wilder worlds** (user: "more wild/distorted/pronounced"): a generator agent (Opus) is lifting the stacked-relief
+  caps, adding a distortion knob and lumpy/triaxial figures for all radii. In progress.
