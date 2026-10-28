@@ -155,6 +155,7 @@ export class PlanetView {
         uTriSharp: u(6),
         uMacroVar: u(0.25),
         uAntiTile: u(1),
+        uHexFreq: u(1),
         uWetness: u(0.5),
         uChannels: u(0.6),
         uDebug: u(0),
@@ -263,7 +264,10 @@ export class PlanetView {
     U.uDetailAmp.value = look.detailAmp;
     U.uDetailScale.value = look.detailScale;
     // Tiles per km: the texture's real tile size scaled up by textureScale (stylised macro tiling).
-    U.uLayerScale.value = this.layers.layers.map((l) => 1000 / (l.tileMeters * look.textureScale));
+    const scales = this.layers.layers.map((l) => 1000 / (l.tileMeters * look.textureScale));
+    U.uLayerScale.value = scales;
+    // One shared hex grid: ~0.55 cells per tile of an average layer.
+    U.uHexFreq.value = (0.55 * scales.reduce((a, b) => a + b, 0)) / scales.length;
     U.uNormalStrength.value = look.normalStrength;
     U.uMacroNormal.value = look.macroNormal;
     U.uHeightBlend.value = look.heightBlend;

@@ -28,3 +28,14 @@ Newest entries at the bottom. Times are local.
   - A texture agent (Sonnet) re-fetched a geological set (ambientCG Ground099/Ground022/Rock050/Ground097/Rock022/Ground108/Ice002/Ground031).
     The albedos are part-desaturated so per-world tints can colour them. 18 MB.
   - Renderer: clouds removed; the look is driven by generator hints ("auto look"); geologic-map debug view; HUD shows bulk facts and a formation timeline.
+
+## 2026-10-28 03:58 — real generator wired, seams, perf
+- `src/app/generate.ts` now calls `generatePlanet` (gen/index.ts); dev stub deleted. Archetypes: rust, cinder, grey moon, ice shell, old ice, sulfur, basalt, cryo, wild (Ceres-scale, no water seas).
+- Face-edge seam lines were a renderer bug: implicit-derivative mips on `tc` (jumps at cube edges -> coarsest mip). Splat/climate now use `textureLod` with LOD from `dFdx(vDir)`.
+- Perf (GTX 1080 Ti, 1689x1269): terrain was the whole frame (165 fps without it vs 31 with).
+  - Adaptive mesh density from on-screen ground size (~5 px/quad, cached 96..384 geometries).
+  - Hex-tiling grid shared per projection (not per layer/map), fixed 2 samples per lookup
+    (D3D flattens data-dependent branches, so skipping samples in branches does not help),
+    top-3 splat layers instead of 4.
+  - Result with hex-tiling on: orbit 33 -> 66 fps, planet filling screen 30 -> 57, low 49 -> 78, ground 67 -> 94.
+- Atmosphere scale heights clamped below the shell height (generator hints gave a hard-edged halo).

@@ -70,8 +70,8 @@ uniform float uAntiTile;   // 0 = plain tiling, >0 = hex-tiling (random offset+r
 // ---- Hex-tiling (Mikkelsen 2022, "Practical Real-Time Hex-Tiling") ---------------------------------
 // The texture plane is covered by a hexagonal grid; each cell samples the texture with a random offset and
 // rotation, and the 3 nearest cells blend with luminance-aware weights. Removes visible tile repetition.
-const float HEX_FREQ = 0.55;      // hex cells per texture tile
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+uniform float uHexFreq;           // hex cells per km (set from the mean layer tile size)
 float gTileMix = 0.0;             // 0 = plain tiling, 1 = hex-tiling (uniform uAntiTile)
 
 float hash12(vec2 p) {
@@ -84,66 +84,73 @@ vec2 hash22(vec2 p) {
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.xx + p3.yz) * p3.zy);
 }
-void hexGrid(vec2 st, out vec3 w, out vec2 v1, out vec2 v2, out vec2 v3) {
-  st *= 3.4641016 * HEX_FREQ;
-  vec2 sk = vec2(st.x, -0.57735027 * st.x + 1.15470054 * st.y);
-  vec2 base = floor(sk);
-  vec3 t = vec3(fract(sk), 0.0);
-  t.z = 1.0 - t.x - t.y;
-  float s = step(0.0, -t.z);
-  float s2 = 2.0 * s - 1.0;
-  w = vec3(-t.z * s2, s - t.y * s2, s - t.x * s2);
-  v1 = base + vec2(s, s);
-  v2 = base + vec2(s, 1.0 - s);
-  v3 = base + vec2(1.0 - s, s);
-}
 mat2 hexRot(vec2 v) {
   float a = hash12(v) * 6.2831853;
   float c = cos(a), sn = sin(a);
   return mat2(c, sn, -sn, c);
 }
 
-// Albedo(+height) lookup. Returns the blend weights so normal/ORM lookups reuse them (consistent cells).
-vec4 triAlbedo(vec2 uv, vec2 gx, vec2 gy, float sc, float L, out vec3 W) {
-  uv *= sc; gx *= sc; gy *= sc;
-  if (gTileMix <= 0.0) { W = vec3(1.0, 0.0, 0.0); return textureGrad(tAlbedo, vec3(uv, L), gx, gy); }
-  vec3 w; vec2 v1, v2, v3;
-  hexGrid(uv, w, v1, v2, v3);
-  mat2 r1 = hexRot(v1), r2 = hexRot(v2), r3 = hexRot(v3);
-  vec4 c1 = textureGrad(tAlbedo, vec3(r1 * uv + hash22(v1), L), r1 * gx, r1 * gy);
-  vec4 c2 = textureGrad(tAlbedo, vec3(r2 * uv + hash22(v2), L), r2 * gx, r2 * gy);
-  vec4 c3 = textureGrad(tAlbedo, vec3(r3 * uv + hash22(v3), L), r3 * gx, r3 * gy);
-  vec3 lw = mix(vec3(1.0), vec3(dot(c1.rgb, LUMA), dot(c2.rgb, LUMA), dot(c3.rgb, LUMA)), 0.6);
-  W = lw * pow(w, vec3(7.0));
-  W /= max(W.x + W.y + W.z, 1e-6);
-  return c1 * W.x + c2 * W.y + c3 * W.z;
+// The hex grid lives in world km on each projection plane and is shared by all layers and maps, so the
+// expensive part (cell lookup, hashes, sin/cos) runs once per projection instead of once per lookup.
+// Only the 2 strongest of the 3 cells are sampled: with the sharp blend the third is almost always ~0,
+// and the sample count must be fixed because the D3D compiler flattens data-dependent branches.
+const int NLAY = 3;   // splat layers blended per pixel (texture cost scales with this)
+
+struct Hex { vec2 w; mat2 r1; mat2 r2; vec2 o1; vec2 o2; };
+
+Hex makeHex(vec2 uvKm) {
+  Hex h;
+  if (gTileMix <= 0.0) {
+    h.w = vec2(1.0, 0.0); h.r1 = h.r2 = mat2(1.0); h.o1 = h.o2 = vec2(0.0);
+    return h;
+  }
+  vec2 st = uvKm * (3.4641016 * uHexFreq);
+  vec2 sk = vec2(st.x, -0.57735027 * st.x + 1.15470054 * st.y);
+  vec2 base = floor(sk);
+  vec3 t = vec3(fract(sk), 0.0);
+  t.z = 1.0 - t.x - t.y;
+  float s = step(0.0, -t.z);
+  float s2 = 2.0 * s - 1.0;
+  vec3 w = vec3(-t.z * s2, s - t.y * s2, s - t.x * s2);
+  vec2 v1 = base + vec2(s, s), v2 = base + vec2(s, 1.0 - s), v3 = base + vec2(1.0 - s, s);
+  // Order the cells by weight and keep the top two.
+  if (w.y > w.x) { w.xy = w.yx; vec2 tv = v1; v1 = v2; v2 = tv; }
+  if (w.z > w.y) { w.yz = w.zy; vec2 tv = v2; v2 = v3; v3 = tv; }
+  if (w.y > w.x) { w.xy = w.yx; vec2 tv = v1; v1 = v2; v2 = tv; }
+  vec2 w7 = pow(w.xy, vec2(7.0));
+  h.w = w7 / (w7.x + w7.y);
+  h.r1 = hexRot(v1); h.r2 = hexRot(v2);
+  h.o1 = hash22(v1); h.o2 = hash22(v2);
+  return h;
 }
 
-vec3 triOrm(vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec3 W) {
+// Albedo(+height). Returns per-layer blend weights (luminance-aware) that normal/ORM reuse.
+vec4 triAlbedo(Hex h, vec2 uv, vec2 gx, vec2 gy, float sc, float L, out vec2 W) {
   uv *= sc; gx *= sc; gy *= sc;
-  if (gTileMix <= 0.0) return textureGrad(tOrm, vec3(uv, L), gx, gy).rgb;
-  vec3 w; vec2 v1, v2, v3;
-  hexGrid(uv, w, v1, v2, v3);
-  mat2 r1 = hexRot(v1), r2 = hexRot(v2), r3 = hexRot(v3);
-  return textureGrad(tOrm, vec3(r1 * uv + hash22(v1), L), r1 * gx, r1 * gy).rgb * W.x
-       + textureGrad(tOrm, vec3(r2 * uv + hash22(v2), L), r2 * gx, r2 * gy).rgb * W.y
-       + textureGrad(tOrm, vec3(r3 * uv + hash22(v3), L), r3 * gx, r3 * gy).rgb * W.z;
+  vec4 c1 = textureGrad(tAlbedo, vec3(h.r1 * uv + h.o1, L), h.r1 * gx, h.r1 * gy);
+  if (gTileMix <= 0.0) { W = vec2(1.0, 0.0); return c1; }
+  vec4 c2 = textureGrad(tAlbedo, vec3(h.r2 * uv + h.o2, L), h.r2 * gx, h.r2 * gy);
+  W = mix(vec2(1.0), vec2(dot(c1.rgb, LUMA), dot(c2.rgb, LUMA)), 0.6) * h.w;
+  W /= max(W.x + W.y, 1e-6);
+  return c1 * W.x + c2 * W.y;
+}
+
+vec3 triOrm(Hex h, vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec2 W) {
+  uv *= sc; gx *= sc; gy *= sc;
+  vec3 o = textureGrad(tOrm, vec3(h.r1 * uv + h.o1, L), h.r1 * gx, h.r1 * gy).rgb;
+  if (gTileMix <= 0.0) return o;
+  return o * W.x + textureGrad(tOrm, vec3(h.r2 * uv + h.o2, L), h.r2 * gx, h.r2 * gy).rgb * W.y;
 }
 
 // Tangent-space normal; each rotated sample's xy is rotated back into the projection frame.
-vec3 triNormal(vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec3 W) {
+vec3 triNormal(Hex h, vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec2 W) {
   uv *= sc; gx *= sc; gy *= sc;
-  if (gTileMix <= 0.0) return textureGrad(tNormal, vec3(uv, L), gx, gy).xyz * 2.0 - 1.0;
-  vec3 w; vec2 v1, v2, v3;
-  hexGrid(uv, w, v1, v2, v3);
-  mat2 r1 = hexRot(v1), r2 = hexRot(v2), r3 = hexRot(v3);
-  vec3 n1 = textureGrad(tNormal, vec3(r1 * uv + hash22(v1), L), r1 * gx, r1 * gy).xyz * 2.0 - 1.0;
-  vec3 n2 = textureGrad(tNormal, vec3(r2 * uv + hash22(v2), L), r2 * gx, r2 * gy).xyz * 2.0 - 1.0;
-  vec3 n3 = textureGrad(tNormal, vec3(r3 * uv + hash22(v3), L), r3 * gx, r3 * gy).xyz * 2.0 - 1.0;
-  n1.xy = transpose(r1) * n1.xy;
-  n2.xy = transpose(r2) * n2.xy;
-  n3.xy = transpose(r3) * n3.xy;
-  return n1 * W.x + n2 * W.y + n3 * W.z;
+  vec3 a = textureGrad(tNormal, vec3(h.r1 * uv + h.o1, L), h.r1 * gx, h.r1 * gy).xyz * 2.0 - 1.0;
+  if (gTileMix <= 0.0) return a;
+  vec3 b = textureGrad(tNormal, vec3(h.r2 * uv + h.o2, L), h.r2 * gx, h.r2 * gy).xyz * 2.0 - 1.0;
+  a.xy = transpose(h.r1) * a.xy;
+  b.xy = transpose(h.r2) * b.xy;
+  return a * W.x + b * W.y;
 }
 
 void main() {
@@ -173,7 +180,7 @@ void main() {
   float hM = textureLod(tHeight, tc, 0.0).r;
   vec4 climate = textureLod(tClimate, tc, dataLod);
 
-  // --- Splat: pick the 4 strongest layers ---------------------------------------------------------
+  // --- Splat: pick the NLAY strongest layers ---------------------------------------------------------
   vec4 s0 = textureLod(tSplat0, tc, dataLod);
   vec4 s1 = textureLod(tSplat1, tc, dataLod);
   float w[LAYERS];
@@ -187,10 +194,10 @@ void main() {
     return;
   }
 
-  int idx[4];
-  float wt[4];
+  int idx[NLAY];
+  float wt[NLAY];
   float wsum = 0.0;
-  for (int k = 0; k < 4; k++) {
+  for (int k = 0; k < NLAY; k++) {
     int best = 0;
     float bw = -1.0;
     for (int i = 0; i < LAYERS; i++) if (w[i] > bw) { bw = w[i]; best = i; }
@@ -199,7 +206,7 @@ void main() {
     wsum += wt[k];
     w[best] = -1.0;
   }
-  for (int k = 0; k < 4; k++) wt[k] /= max(wsum, 1e-4);
+  for (int k = 0; k < NLAY; k++) wt[k] /= max(wsum, 1e-4);
 
   // --- Triplanar setup (projection weights from macro normal) ------------------------------------
   vec3 bw = pow(abs(Nm), vec3(uTriSharp));
@@ -213,50 +220,55 @@ void main() {
   vec2 gYx = vec2(dpdx.x * axisSign.y, dpdx.z), gYy = vec2(dpdy.x * axisSign.y, dpdy.z);
   vec2 gZx = vec2(-dpdx.x * axisSign.z, dpdx.y), gZy = vec2(-dpdy.x * axisSign.z, dpdy.y);
 
+  Hex hX, hY, hZ;
+  if (bw.x > 0.02) hX = makeHex(uvX);
+  if (bw.y > 0.02) hY = makeHex(uvY);
+  if (bw.z > 0.02) hZ = makeHex(uvZ);
+
   // Per layer albedo+height (needed first for height blending).
-  vec4 ah[4];
-  vec3 hwX[4], hwY[4], hwZ[4];   // hex blend weights per layer & projection, reused by normal/ORM
-  for (int k = 0; k < 4; k++) {
+  vec4 ah[NLAY];
+  vec2 hwX[NLAY], hwY[NLAY], hwZ[NLAY];   // hex blend weights per layer & projection, reused by normal/ORM
+  for (int k = 0; k < NLAY; k++) {
     ah[k] = vec4(0.0);
-    hwX[k] = hwY[k] = hwZ[k] = vec3(1.0, 0.0, 0.0);
+    hwX[k] = hwY[k] = hwZ[k] = vec2(1.0, 0.0);
     if (wt[k] < 0.004) continue;
     float L = float(idx[k]);
     float sc = uLayerScale[idx[k]];
-    if (bw.x > 0.02) ah[k] += bw.x * triAlbedo(uvX, gXx, gXy, sc, L, hwX[k]);
-    if (bw.y > 0.02) ah[k] += bw.y * triAlbedo(uvY, gYx, gYy, sc, L, hwY[k]);
-    if (bw.z > 0.02) ah[k] += bw.z * triAlbedo(uvZ, gZx, gZy, sc, L, hwZ[k]);
+    if (bw.x > 0.02) ah[k] += bw.x * triAlbedo(hX, uvX, gXx, gXy, sc, L, hwX[k]);
+    if (bw.y > 0.02) ah[k] += bw.y * triAlbedo(hY, uvY, gYx, gYy, sc, L, hwY[k]);
+    if (bw.z > 0.02) ah[k] += bw.z * triAlbedo(hZ, uvZ, gZx, gZy, sc, L, hwZ[k]);
   }
 
   // Height-based blend.
-  float hb[4];
+  float hb[NLAY];
   float mx = -1e3;
-  for (int k = 0; k < 4; k++) {
+  for (int k = 0; k < NLAY; k++) {
     hb[k] = wt[k] < 0.004 ? -1e3 : wt[k] + ah[k].a * uHeightBlend;
     mx = max(mx, hb[k]);
   }
   float bsum = 0.0;
-  for (int k = 0; k < 4; k++) { hb[k] = max(hb[k] - mx + 0.25, 0.0) * step(0.004, wt[k]); bsum += hb[k]; }
-  for (int k = 0; k < 4; k++) hb[k] /= max(bsum, 1e-4);
+  for (int k = 0; k < NLAY; k++) { hb[k] = max(hb[k] - mx + 0.25, 0.0) * step(0.004, wt[k]); bsum += hb[k]; }
+  for (int k = 0; k < NLAY; k++) hb[k] /= max(bsum, 1e-4);
 
   vec3 albedo = vec3(0.0);
   vec3 orm = vec3(0.0);
   vec3 tnX = vec3(0.0), tnY = vec3(0.0), tnZ = vec3(0.0);
-  for (int k = 0; k < 4; k++) {
+  for (int k = 0; k < NLAY; k++) {
     if (hb[k] < 0.004) continue;
     float L = float(idx[k]);
     float sc = uLayerScale[idx[k]];
     albedo += hb[k] * ah[k].rgb * uLayerTint[idx[k]];
     if (bw.x > 0.02) {
-      tnX += hb[k] * triNormal(uvX, gXx, gXy, sc, L, hwX[k]);
-      orm += hb[k] * bw.x * triOrm(uvX, gXx, gXy, sc, L, hwX[k]);
+      tnX += hb[k] * triNormal(hX, uvX, gXx, gXy, sc, L, hwX[k]);
+      orm += hb[k] * bw.x * triOrm(hX, uvX, gXx, gXy, sc, L, hwX[k]);
     }
     if (bw.y > 0.02) {
-      tnY += hb[k] * triNormal(uvY, gYx, gYy, sc, L, hwY[k]);
-      orm += hb[k] * bw.y * triOrm(uvY, gYx, gYy, sc, L, hwY[k]);
+      tnY += hb[k] * triNormal(hY, uvY, gYx, gYy, sc, L, hwY[k]);
+      orm += hb[k] * bw.y * triOrm(hY, uvY, gYx, gYy, sc, L, hwY[k]);
     }
     if (bw.z > 0.02) {
-      tnZ += hb[k] * triNormal(uvZ, gZx, gZy, sc, L, hwZ[k]);
-      orm += hb[k] * bw.z * triOrm(uvZ, gZx, gZy, sc, L, hwZ[k]);
+      tnZ += hb[k] * triNormal(hZ, uvZ, gZx, gZy, sc, L, hwZ[k]);
+      orm += hb[k] * bw.z * triOrm(hZ, uvZ, gZx, gZy, sc, L, hwZ[k]);
     }
   }
   // Fade detail normals with distance (they alias into sparkle from orbit).
