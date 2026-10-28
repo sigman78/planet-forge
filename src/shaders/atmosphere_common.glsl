@@ -3,6 +3,7 @@
 #define ATMO_COMMON_GLSL
 
 uniform float uPlanetRadius;   // sea-level radius, km
+uniform float uGroundRadius;   // radius of the lowest terrain point, km (solid core for sky rays)
 uniform float uAtmoRadius;     // top of atmosphere, km
 uniform vec3  uRayleigh;       // scattering coefficient per km at sea level
 uniform float uRayleighH;      // scale height km
@@ -30,13 +31,16 @@ vec2 raySphere(vec3 ro, vec3 rd, float r) {
 // Densities (rayleigh, mie, haze). Haze is a separate thin ground layer: barely visible from orbit
 // (short vertical path) but it thickens toward the horizon when seen from low altitude.
 vec3 atmoDensityAt(vec3 p) {
-  float h = max(length(p) - uPlanetRadius, 0.0);
-  return vec3(vec2(exp(-h / uRayleighH), exp(-h / uMieH)) * uAtmoDensity, exp(-h / uHazeH));
+  // Altitude relative to the datum; basins below it are denser (down to the lowest terrain).
+  // Capped so deep basins get at most ~2x the datum density instead of a whiteout.
+  float h = length(p) - uPlanetRadius;
+  vec3 hh = max(vec3(h), max(vec3(uGroundRadius - uPlanetRadius), -0.7 * vec3(uRayleighH, uMieH, uHazeH)));
+  return vec3(exp(-hh.x / uRayleighH) * uAtmoDensity, exp(-hh.y / uMieH) * uAtmoDensity, exp(-hh.z / uHazeH));
 }
 
 // Optical depth (rayleigh, mie) from p toward the sun. Returns large values when the planet blocks the sun.
 vec3 opticalDepthToSun(vec3 p, int steps) {
-  vec2 hitG = raySphere(p, uSunDir, uPlanetRadius * 0.9995);
+  vec2 hitG = raySphere(p, uSunDir, uGroundRadius);
   if (hitG.x > 0.0 && hitG.x < hitG.y) return vec3(1e4);
   float tEnd = raySphere(p, uSunDir, uAtmoRadius).y;
   float dt = tEnd / float(steps);

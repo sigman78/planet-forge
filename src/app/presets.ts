@@ -80,7 +80,7 @@ export function applyLookHints(h: LookHints, env: EnvParams, look: LookParams, b
   if (bulk) {
     const p = Math.max(bulk.atmospherePressureBar, 1e-16);
     const k = Math.min(Math.max((Math.log10(p) + 7) / 5, 0), 1); // 1e-7 bar -> 0, 1e-2 bar -> 1
-    env.haze = 0.6 + 34 * k * k;
+    env.haze = 0.5 + 13 * k * k;
     env.hazeH = Math.min(Math.max(bulk.radiusKm * 0.008, 1.5), 6) * (1 + k);
     // Tint from the dust layer (raw texture is greyish; the world tint carries the colour).
     const t = h.layerTints[0] ?? [1, 1, 1];

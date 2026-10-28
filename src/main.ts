@@ -270,6 +270,10 @@ async function main() {
   fSurf.addBinding(look, 'detailAmp', { label: 'detail relief (m)', min: 0, max: 1500, step: 5 });
   fSurf.addBinding(look, 'detailScale', { label: 'detail size (km)', min: 0.5, max: 40, step: 0.1 });
   fSurf.addBinding(look, 'fineDetail', { label: 'fine relief', min: 0, max: 3, step: 0.05 });
+  fSurf.addBinding(look, 'shadows', { label: 'cast shadows', min: 0, max: 1, step: 0.05 });
+  fSurf.addBinding(look, 'terrainAO', { label: 'terrain AO', min: 0, max: 1.5, step: 0.05 });
+  fSurf.addBinding(look, 'specular', { label: 'specular', min: 0, max: 1.5, step: 0.05 });
+  fSurf.addBinding(look, 'roughMin', { label: 'min roughness', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'seaFloorScale', { label: 'seafloor scale', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'textureScale', { label: 'texture scale', min: 10, max: 2000, step: 1 });
   fSurf.addBinding(look, 'normalStrength', { label: 'detail normal', min: 0, max: 3, step: 0.01 });

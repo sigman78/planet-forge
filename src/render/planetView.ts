@@ -27,6 +27,7 @@ export function createSharedUniforms() {
   return {
     uPlanetRadius: u(1200),
     uAtmoRadius: u(1260),
+    uGroundRadius: u(1190),
     uRayleigh: u(new THREE.Vector3(5.8e-3, 13.5e-3, 33.1e-3)),
     uRayleighH: u(8),
     uMie: u(4e-3),
@@ -56,6 +57,10 @@ export interface LookParams {
   detailAmp: number; // metres of procedural detail relief
   detailScale: number; // km
   fineDetail: number; // strength of sub-heightmap bump relief (fragment only)
+  shadows: number; // terrain cast shadows (heightmap ray march) strength
+  specular: number; // specular scale
+  roughMin: number; // roughness floor for dry layers
+  terrainAO: number; // heightmap ambient occlusion strength
   textureScale: number; // world-scale multiplier for texture tiles (stylised: >1 = bigger tiles)
   normalStrength: number;
   macroNormal: number;
@@ -85,6 +90,10 @@ export const DEFAULT_LOOK: LookParams = {
   detailAmp: 350,
   detailScale: 6,
   fineDetail: 1,
+  shadows: 1,
+  specular: 0.5,
+  roughMin: 0.65,
+  terrainAO: 1,
   textureScale: 250,
   normalStrength: 0.7,
   macroNormal: 1,
@@ -136,6 +145,7 @@ export class PlanetView {
       tSplat0: u<THREE.Texture>(this.placeholder),
       tSplat1: u<THREE.Texture>(this.placeholder),
       tClimate: u<THREE.Texture>(this.placeholder),
+      tAO: u<THREE.Texture>(this.placeholder),
       uN: u(1),
       uRadius: shared.uPlanetRadius,
       uHeightScale: u(0.001),
@@ -163,6 +173,10 @@ export class PlanetView {
         uAntiTile: u(1),
         uHexFreq: u(1),
         uFineDetail: u(1),
+        uShadows: u(1),
+        uSpecular: u(0.5),
+        uRoughMin: u(0.65),
+        uTerrainAO: u(1),
         uWetness: u(0.5),
         uChannels: u(0.6),
         uDebug: u(0),
@@ -255,6 +269,7 @@ export class PlanetView {
     U.tSplat0.value = this.tex.splat0;
     U.tSplat1.value = this.tex.splat1;
     U.tClimate.value = this.tex.climate;
+    U.tAO.value = this.tex.ao;
     U.uN.value = data.N;
     this.shared.uPlanetRadius.value = data.radius / 1000;
     const colors = U.uUnitColors.value as THREE.Color[];
@@ -268,9 +283,18 @@ export class PlanetView {
     const U = this.terrainMat.uniforms;
     U.uHeightScale.value = 0.001 * look.heightExaggeration;
     U.uSeaFloorScale.value = look.seaFloorScale;
+    if (this.data) {
+      const minH = this.data.minHeight;
+      const minKm = (minH < 0 ? minH * look.seaFloorScale : minH) * 0.001 * look.heightExaggeration;
+      this.shared.uGroundRadius.value = this.data.radius / 1000 + Math.min(minKm, 0) - 0.3;
+    }
     U.uDetailAmp.value = look.detailAmp;
     U.uDetailScale.value = look.detailScale;
     U.uFineDetail.value = look.fineDetail;
+    U.uShadows.value = look.shadows;
+    U.uSpecular.value = look.specular;
+    U.uRoughMin.value = look.roughMin;
+    U.uTerrainAO.value = look.terrainAO;
     // Tiles per km: the texture's real tile size scaled up by textureScale (stylised macro tiling).
     const scales = this.layers.layers.map((l) => 1000 / (l.tileMeters * look.textureScale));
     U.uLayerScale.value = scales;

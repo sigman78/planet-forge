@@ -27,8 +27,9 @@ void main() {
 
   vec2 hit = raySphere(ro, rd, uAtmoRadius);
   if (hit.x > hit.y || hit.y < 0.0) { gl_FragColor = vec4(col, 1.0); return; }
-  // Rays into empty sky stop at the solid planet sphere (handles pixels without depth, e.g. clouds).
-  vec2 ground = raySphere(ro, rd, uPlanetRadius * 0.998);
+  // Rays without scene depth stop at the lowest-terrain sphere (never above real ground, so low
+  // cameras in basins do not see a fake dark horizon).
+  vec2 ground = raySphere(ro, rd, uGroundRadius);
   if (sceneT > 1e8 && ground.x > 0.0 && ground.x < ground.y) sceneT = ground.x;
   float t0 = max(hit.x, 0.0);
   float t1 = min(hit.y, sceneT);
@@ -65,18 +66,20 @@ void main() {
     vec2 hh = raySphere(ro, rd, min(uPlanetRadius + uHazeH * 6.0, uAtmoRadius));
     float a0 = max(hh.x, 0.0), a1 = min(hh.y, min(sceneT, ground.x > 0.0 && ground.x < ground.y ? ground.x : 1e9));
     if (a1 > a0) {
-      float hdt = (a1 - a0) / 12.0;
-      for (int i = 0; i < 12; i++) {
-        vec3 p = ro + rd * (a0 + (float(i) + 0.5) * hdt);
+      float hdt = (a1 - a0) / 16.0;
+      float dither = ign(gl_FragCoord.xy);   // static per-pixel offset: fine noise instead of bands
+      for (int i = 0; i < 16; i++) {
+        vec3 p = ro + rd * (a0 + (float(i) + dither) * hdt);
         float r = length(p);
-        float dz = exp(-max(r - uPlanetRadius, 0.0) / uHazeH) * hdt;
+        float hz = max(r - uPlanetRadius, max(uGroundRadius - uPlanetRadius, -0.7 * uHazeH));
+        float dz = exp(-hz / uHazeH) * hdt;
         hazeOD += dz;
         // Sun through the haze: planet shadow + airmass approximation instead of a nested march.
         vec3 up = p / r;
         float cz = dot(up, uSunDir);
-        vec2 occ = raySphere(p, uSunDir, uPlanetRadius * 0.999);
+        vec2 occ = raySphere(p, uSunDir, uGroundRadius);
         float lit = (occ.x > 0.0 && occ.x < occ.y) ? 0.0 : 1.0;
-        float odSunH = uHaze * uHazeH * exp(-max(r - uPlanetRadius, 0.0) / uHazeH) / max(cz + 0.15, 0.08);
+        float odSunH = uHaze * uHazeH * exp(-hz / uHazeH) / max(cz + 0.15, 0.08);
         sumH += dz * exp(-uHaze * hazeOD - odSunH) * (lit * smoothstep(-0.12, 0.05, cz));
       }
     }

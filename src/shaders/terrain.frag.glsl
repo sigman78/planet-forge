@@ -10,6 +10,9 @@ uniform sampler2DArray tNormal;   // GL normal
 uniform sampler2DArray tOrm;      // ao, roughness, metal
 uniform float uLayerScale[LAYERS];   // tiles per km
 uniform float uFineDetail;           // strength of the sub-heightmap bump octaves (0 = off)
+uniform sampler2DArray tAO;          // heightmap ambient occlusion (R)
+uniform float uShadows;              // cast-shadow strength (0 = off)
+uniform float uTerrainAO;            // heightmap AO strength
 uniform vec3  uLayerTint[LAYERS];
 uniform float uNormalStrength;
 uniform float uMacroNormal;          // strength of the heightmap-derived normal
@@ -47,6 +50,9 @@ vec3 tempRamp(float t) {
 }
 
 // GGX / Smith / Schlick.
+uniform float uSpecular;   // specular scale (dusty regolith has almost no sheen)
+uniform float uRoughMin;   // roughness floor for rock/dust layers (ice & salt keep their own)
+
 vec3 brdf(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 L) {
   vec3 H = normalize(V + L);
   float NdL = max(dot(N, L), 0.0);
@@ -63,7 +69,9 @@ vec3 brdf(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 L) {
   vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdH, 5.0);
   vec3 spec = D * G * F / (4.0 * NdL * NdV + 1e-4);
   vec3 kd = (1.0 - F) * (1.0 - metal);
-  return (kd * albedo / PI + spec) * NdL;
+  // Opposition surge: regolith brightens when lit from behind the viewer (shadow hiding).
+  float surge = 1.0 + 0.35 * pow(max(dot(V, L), 0.0), 6.0) * rough;
+  return (kd * albedo / PI * surge + spec * uSpecular) * NdL;
 }
 
 uniform float uAntiTile;   // 0 = plain tiling, >0 = hex-tiling (random offset+rotation per hex cell)
@@ -175,6 +183,27 @@ float fineDetailM(vec3 d, float h) {
     a *= 0.42;                             // steep falloff: shape first, grain last
   }
   return sum * uDetailAmp * mask * uFineDetail;
+}
+
+// Soft cast shadow from the baked heightmap: march toward the sun with growing steps and keep the
+// smallest clearance angle (penumbra ~ the sun's disc plus some softening).
+float terrainShadow(vec3 n, vec3 L) {
+  if (uShadows <= 0.0) return 1.0;
+  float texKm = uRadius * 1.5707963 / uN;
+  vec3 p = n * (uRadius + elevationKm(bakedHeightM(n))) + n * texKm * 0.15;
+  float t = texKm * 0.8;
+  float tMax = min(uRadius * 0.35, 160.0);
+  float s = 1.0;
+  for (int i = 0; i < 24; i++) {
+    vec3 q = p + L * t;
+    float rq = length(q);
+    vec3 d = q / rq;
+    float clear = rq - (uRadius + elevationKm(bakedHeightM(d)));
+    s = min(s, clamp(clear / (t * 0.035) + 0.5, 0.0, 1.0));
+    if (s <= 0.0 || t > tMax) break;
+    t *= 1.28;
+  }
+  return mix(1.0, smoothstep(0.0, 1.0, s), uShadows);
 }
 
 void main() {
@@ -317,7 +346,11 @@ void main() {
   vec3 N = normalize(tnX.zyx * bw.x + tnY.xzy * bw.y + tnZ.xyz * bw.z);
 
   float ao = mix(1.0, orm.r, 0.8);
-  float rough = clamp(orm.g, 0.05, 1.0);
+  float terrAO = mix(1.0, textureLod(tAO, tc, dataLod).r, uTerrainAO);
+  // Dry rock and dust are very rough; ice (6) and salt (7) keep their texture roughness.
+  float glossy = 0.0;
+  for (int k = 0; k < NLAY; k++) if (idx[k] >= 6) glossy += hb[k];
+  float rough = clamp(mix(mix(uRoughMin, 1.0, orm.g), orm.g, glossy), 0.05, 1.0);
   float metal = orm.b;
 
   // --- Macro variation ------------------------------------------------------------------------------
@@ -339,9 +372,15 @@ void main() {
   vec3 sunCol = sunLightAt(vWorldPos);
   // Keep normal-mapped light from leaking past the terminator.
   float horizon = smoothstep(-0.02, 0.06, dot(n, Lsun));
-  vec3 col = brdf(albedo, rough, metal, N, V, Lsun) * sunCol * horizon;
+  float shadow = dot(n, Lsun) > -0.05 ? terrainShadow(n, Lsun) : 0.0;
+  // Micro-shadowing from the texture AO (cheap stand-in for self-shadowing of the small relief).
+  float NoL = dot(N, Lsun);
+  float micro = clamp(abs(NoL) + 2.0 * ao * ao - 1.0, 0.0, 1.0);
+  // Cavity: occluded spots also catch less direct light (sun from a narrower aperture).
+  float cavity = mix(1.0, terrAO, 0.45);
+  vec3 col = brdf(albedo, rough, metal, N, V, Lsun) * sunCol * horizon * shadow * micro * cavity;
   float dayAmb = smoothstep(-0.25, 0.3, dot(n, Lsun));
-  col += albedo * ao * (uSkyAmbient * dayAmb + vec3(uAmbient)) * (0.6 + 0.4 * dot(N, n));
+  col += albedo * ao * terrAO * (uSkyAmbient * dayAmb + vec3(uAmbient)) * (0.6 + 0.4 * dot(N, n));
 
   // --- Debug views ---------------------------------------------------------------------------------
   if (uDebug == 1) col = albedo;
@@ -357,6 +396,6 @@ void main() {
     vec2 g = abs(fract(stf.xy * 8.0) - 0.5);
     col = faceCol[int(stf.z)] * (0.6 + 0.4 * step(0.45, max(g.x, g.y)));
   }
-  else if (uDebug == 10) col = vec3(ao * rough, ao, rough);
+  else if (uDebug == 10) col = vec3(ao * terrAO * shadow);
   gl_FragColor = vec4(col, 1.0);
 }
