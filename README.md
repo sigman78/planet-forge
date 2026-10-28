@@ -117,4 +117,6 @@ the ground.
 Terrain textures are CC0 sets from [ambientCG](https://ambientcg.com). See `public/textures/ATTRIBUTION.md`.
 Built with [three.js](https://threejs.org), [Vite](https://vite.dev) and [Tweakpane](https://tweakpane.github.io/docs/).
 
-No license has been chosen for the code yet. Until one is added, all rights are reserved.
+## License
+
+Code: [MIT](LICENSE). Textures: CC0 (ambientCG).
