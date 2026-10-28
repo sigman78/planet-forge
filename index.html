@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Planet Forge</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --fg: #d9e4ee;
+        --dim: #7d8fa3;
+        --accent: #ffb454;
+        --accent2: #5fd4ff;
+        --panel: rgba(10, 14, 22, 0.72);
+        --line: rgba(140, 170, 200, 0.18);
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #000; color: var(--fg); overflow: hidden; font-family: 'Chakra Petch', system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+      canvas:active { cursor: grabbing; }
+      #hud { position: fixed; left: 20px; top: 18px; pointer-events: none; user-select: none; max-width: 46vw; }
+      #hud .brand { font-size: 11px; letter-spacing: 0.42em; color: var(--dim); text-transform: uppercase; }
+      #hud .brand b { color: var(--accent); font-weight: 600; }
+      #hud .name { font-size: 34px; font-weight: 600; letter-spacing: 0.04em; margin-top: 4px; text-shadow: 0 0 24px rgba(95, 212, 255, 0.25); }
+      #hud .klass { font-size: 13px; color: var(--accent2); letter-spacing: 0.18em; text-transform: uppercase; }
+      #hud .facts { margin-top: 10px; font: 11px/1.7 'JetBrains Mono', monospace; color: var(--dim); white-space: pre; }
+      #hud .facts span { color: var(--fg); }
+      #help { position: fixed; left: 20px; bottom: 16px; font: 11px/1.6 'JetBrains Mono', monospace; color: var(--dim); pointer-events: none; }
+      #help kbd { color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font: inherit; }
+      #progress { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); width: min(420px, 70vw); pointer-events: none; opacity: 0; transition: opacity 0.4s; }
+      #progress.on { opacity: 1; }
+      #progress .bar { height: 2px; background: var(--line); overflow: hidden; }
+      #progress .fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 0.15s; }
+      #progress .label { font: 11px 'JetBrains Mono', monospace; color: var(--dim); text-align: center; margin-bottom: 6px; letter-spacing: 0.08em; }
+      #presets { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; max-width: 60vw; }
+      #presets button { font: 600 11px 'Chakra Petch', sans-serif; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg); background: var(--panel); border: 1px solid var(--line); padding: 7px 12px; border-radius: 2px; cursor: pointer; backdrop-filter: blur(6px); }
+      #presets button:hover { border-color: var(--accent2); }
+      #presets button.active { border-color: var(--accent); color: var(--accent); }
+      #pane { position: fixed; right: 12px; top: 12px; width: 330px; max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: thin; }
+      #pane::-webkit-scrollbar { width: 6px; }
+      #pane::-webkit-scrollbar-thumb { background: var(--line); }
+      #boot { position: fixed; inset: 0; display: grid; place-items: center; background: #000; z-index: 10; transition: opacity 0.8s; font: 12px 'JetBrains Mono', monospace; color: var(--dim); letter-spacing: 0.2em; }
+      #boot.done { opacity: 0; pointer-events: none; }
+      #boot .err { color: #ff7b7b; letter-spacing: 0; max-width: 60ch; white-space: pre-wrap; }
+      @media (max-width: 760px) {
+        #pane { width: calc(100vw - 24px); top: auto; bottom: 12px; max-height: 45vh; }
+        #presets { top: auto; bottom: calc(45vh + 24px); max-width: 94vw; }
+        #hud .name { font-size: 24px; }
+        #help { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud">
+      <div class="brand"><b>Planet</b> Forge</div>
+      <div class="name" id="pname">—</div>
+      <div class="klass" id="pclass"></div>
+      <div class="facts" id="pfacts"></div>
+    </div>
+    <div id="presets"></div>
+    <div id="pane"></div>
+    <div id="progress"><div class="label" id="plabel"></div><div class="bar"><div class="fill" id="pfill"></div></div></div>
+    <div id="help"><kbd>drag</kbd> orbit · <kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> look · <kbd>R</kbd> new seed · <kbd>H</kbd> hide UI · <kbd>1-9</kbd> debug views</div>
+    <div id="boot">FORGING…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
