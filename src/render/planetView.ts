@@ -57,6 +57,7 @@ export interface LookParams {
   heightBlend: number;
   triSharp: number;
   macroVar: number;
+  antiTile: number; // 0 = plain tiling, 1 = hex-tiling (no visible repetition)
   tintStrength: number; // 0 = raw textures, 1 = full per-world layer tints from the generator
   wetness: number;
   channels: number; // darkening of erosion channels / outflow beds
@@ -79,11 +80,12 @@ export const DEFAULT_LOOK: LookParams = {
   detailAmp: 350,
   detailScale: 6,
   textureScale: 250,
-  normalStrength: 1,
+  normalStrength: 0.7,
   macroNormal: 1,
   heightBlend: 0.6,
   triSharp: 6,
   macroVar: 0.25,
+  antiTile: 1,
   tintStrength: 1,
   wetness: 0.5,
   channels: 0.6,
@@ -133,6 +135,8 @@ export class PlanetView {
       uSeaFloorScale: u(DEFAULT_LOOK.seaFloorScale),
       uDetailAmp: u(DEFAULT_LOOK.detailAmp),
       uDetailScale: u(DEFAULT_LOOK.detailScale),
+      uPixelAngle: u(0.001),
+      uVertexSpacing: u(3),
     };
 
     this.terrainMat = new THREE.ShaderMaterial({
@@ -149,6 +153,7 @@ export class PlanetView {
         uHeightBlend: u(0.6),
         uTriSharp: u(6),
         uMacroVar: u(0.25),
+        uAntiTile: u(1),
         uWetness: u(0.5),
         uChannels: u(0.6),
         uDebug: u(0),
@@ -186,6 +191,13 @@ export class PlanetView {
     for (const m of [this.terrain, this.ocean]) m.frustumCulled = false;
     this.ocean.renderOrder = 1;
     this.group.add(this.terrain, this.ocean);
+  }
+
+  /** Per-frame filtering inputs: how much ground one pixel / one mesh quad covers. */
+  updateFootprint(camera: THREE.PerspectiveCamera, viewportHeightPx: number) {
+    const U = this.terrainMat.uniforms;
+    U.uPixelAngle.value = THREE.MathUtils.degToRad(camera.fov) / Math.max(viewportHeightPx, 1);
+    U.uVertexSpacing.value = (this.shared.uPlanetRadius.value * Math.PI * 0.5) / Math.max(this.meshSegments, 1);
   }
 
   setMeshSegments(segments: number) {
@@ -226,6 +238,7 @@ export class PlanetView {
     U.uHeightBlend.value = look.heightBlend;
     U.uTriSharp.value = look.triSharp;
     U.uMacroVar.value = look.macroVar;
+    U.uAntiTile.value = look.antiTile;
     U.uWetness.value = look.wetness;
     U.uChannels.value = look.channels;
     const tints = this.data?.info?.look.layerTints;

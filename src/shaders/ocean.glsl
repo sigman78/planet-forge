@@ -30,7 +30,10 @@ uniform float uLavaGlow;
 varying vec3 vDir;
 varying vec3 vWorldPos;
 
-vec3 sampleWaterNormal(vec2 uv) { return texture(tWaterNormal, uv).xyz * 2.0 - 1.0; }
+// Screen-space derivatives of the world position (set at the top of main, in uniform control flow).
+vec3 gDpdx;
+vec3 gDpdy;
+vec3 sampleWaterNormal(vec2 uv, vec2 gx, vec2 gy) { return textureGrad(tWaterNormal, uv, gx, gy).xyz * 2.0 - 1.0; }
 
 // Triplanar-free trick: build the wave normal in the local tangent frame of the sphere.
 vec3 waveNormal(vec3 n, vec3 p, float strength) {
@@ -46,17 +49,21 @@ vec3 waveNormal(vec3 n, vec3 p, float strength) {
   vec2 d2 = vec2(-0.011, 0.017) * t;
   vec3 acc = vec3(0.0);
   vec2 uvs[3] = vec2[3](p.zy, p.xz, p.xy);
+  vec2 gxs[3] = vec2[3](gDpdx.zy, gDpdx.xz, gDpdx.xy);
+  vec2 gys[3] = vec2[3](gDpdy.zy, gDpdy.xz, gDpdy.xy);
   for (int i = 0; i < 3; i++) {
     float wgt = i == 0 ? bw.x : (i == 1 ? bw.y : bw.z);
     if (wgt < 0.02) continue;
-    vec3 a = sampleWaterNormal(uvs[i] * uWaveScale + d1);
-    vec3 b = sampleWaterNormal(uvs[i] * uWaveScale * 0.37 + d2);
+    vec3 a = sampleWaterNormal(uvs[i] * uWaveScale + d1, gxs[i] * uWaveScale, gys[i] * uWaveScale);
+    vec3 b = sampleWaterNormal(uvs[i] * uWaveScale * 0.37 + d2, gxs[i] * uWaveScale * 0.37, gys[i] * uWaveScale * 0.37);
     acc += wgt * vec3(a.xy + b.xy, 1.0);
   }
   return normalize(n + (t1 * acc.x + t2 * acc.y) * strength);
 }
 
 void main() {
+  gDpdx = dFdx(vWorldPos);
+  gDpdy = dFdy(vWorldPos);
   vec3 n = normalize(vDir);
   float h = texture(tHeight, cubeTexCoord(n, uN)).r;   // seabed elevation, metres (negative under water)
   float depth = -h;

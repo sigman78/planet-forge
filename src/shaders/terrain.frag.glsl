@@ -65,14 +65,101 @@ vec3 brdf(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 L) {
   return (kd * albedo / PI + spec) * NdL;
 }
 
+uniform float uAntiTile;   // 0 = plain tiling, >0 = hex-tiling (random offset+rotation per hex cell)
+
+// ---- Hex-tiling (Mikkelsen 2022, "Practical Real-Time Hex-Tiling") ---------------------------------
+// The texture plane is covered by a hexagonal grid; each cell samples the texture with a random offset and
+// rotation, and the 3 nearest cells blend with luminance-aware weights. Removes visible tile repetition.
+const float HEX_FREQ = 0.55;      // hex cells per texture tile
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+float gTileMix = 0.0;             // 0 = plain tiling, 1 = hex-tiling (uniform uAntiTile)
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 hash22(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy);
+}
+void hexGrid(vec2 st, out vec3 w, out vec2 v1, out vec2 v2, out vec2 v3) {
+  st *= 3.4641016 * HEX_FREQ;
+  vec2 sk = vec2(st.x, -0.57735027 * st.x + 1.15470054 * st.y);
+  vec2 base = floor(sk);
+  vec3 t = vec3(fract(sk), 0.0);
+  t.z = 1.0 - t.x - t.y;
+  float s = step(0.0, -t.z);
+  float s2 = 2.0 * s - 1.0;
+  w = vec3(-t.z * s2, s - t.y * s2, s - t.x * s2);
+  v1 = base + vec2(s, s);
+  v2 = base + vec2(s, 1.0 - s);
+  v3 = base + vec2(1.0 - s, s);
+}
+mat2 hexRot(vec2 v) {
+  float a = hash12(v) * 6.2831853;
+  float c = cos(a), sn = sin(a);
+  return mat2(c, sn, -sn, c);
+}
+
+// Albedo(+height) lookup. Returns the blend weights so normal/ORM lookups reuse them (consistent cells).
+vec4 triAlbedo(vec2 uv, vec2 gx, vec2 gy, float sc, float L, out vec3 W) {
+  uv *= sc; gx *= sc; gy *= sc;
+  if (gTileMix <= 0.0) { W = vec3(1.0, 0.0, 0.0); return textureGrad(tAlbedo, vec3(uv, L), gx, gy); }
+  vec3 w; vec2 v1, v2, v3;
+  hexGrid(uv, w, v1, v2, v3);
+  mat2 r1 = hexRot(v1), r2 = hexRot(v2), r3 = hexRot(v3);
+  vec4 c1 = textureGrad(tAlbedo, vec3(r1 * uv + hash22(v1), L), r1 * gx, r1 * gy);
+  vec4 c2 = textureGrad(tAlbedo, vec3(r2 * uv + hash22(v2), L), r2 * gx, r2 * gy);
+  vec4 c3 = textureGrad(tAlbedo, vec3(r3 * uv + hash22(v3), L), r3 * gx, r3 * gy);
+  vec3 lw = mix(vec3(1.0), vec3(dot(c1.rgb, LUMA), dot(c2.rgb, LUMA), dot(c3.rgb, LUMA)), 0.6);
+  W = lw * pow(w, vec3(7.0));
+  W /= max(W.x + W.y + W.z, 1e-6);
+  return c1 * W.x + c2 * W.y + c3 * W.z;
+}
+
+vec3 triOrm(vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec3 W) {
+  uv *= sc; gx *= sc; gy *= sc;
+  if (gTileMix <= 0.0) return textureGrad(tOrm, vec3(uv, L), gx, gy).rgb;
+  vec3 w; vec2 v1, v2, v3;
+  hexGrid(uv, w, v1, v2, v3);
+  mat2 r1 = hexRot(v1), r2 = hexRot(v2), r3 = hexRot(v3);
+  return textureGrad(tOrm, vec3(r1 * uv + hash22(v1), L), r1 * gx, r1 * gy).rgb * W.x
+       + textureGrad(tOrm, vec3(r2 * uv + hash22(v2), L), r2 * gx, r2 * gy).rgb * W.y
+       + textureGrad(tOrm, vec3(r3 * uv + hash22(v3), L), r3 * gx, r3 * gy).rgb * W.z;
+}
+
+// Tangent-space normal; each rotated sample's xy is rotated back into the projection frame.
+vec3 triNormal(vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec3 W) {
+  uv *= sc; gx *= sc; gy *= sc;
+  if (gTileMix <= 0.0) return textureGrad(tNormal, vec3(uv, L), gx, gy).xyz * 2.0 - 1.0;
+  vec3 w; vec2 v1, v2, v3;
+  hexGrid(uv, w, v1, v2, v3);
+  mat2 r1 = hexRot(v1), r2 = hexRot(v2), r3 = hexRot(v3);
+  vec3 n1 = textureGrad(tNormal, vec3(r1 * uv + hash22(v1), L), r1 * gx, r1 * gy).xyz * 2.0 - 1.0;
+  vec3 n2 = textureGrad(tNormal, vec3(r2 * uv + hash22(v2), L), r2 * gx, r2 * gy).xyz * 2.0 - 1.0;
+  vec3 n3 = textureGrad(tNormal, vec3(r3 * uv + hash22(v3), L), r3 * gx, r3 * gy).xyz * 2.0 - 1.0;
+  n1.xy = transpose(r1) * n1.xy;
+  n2.xy = transpose(r2) * n2.xy;
+  n3.xy = transpose(r3) * n3.xy;
+  return n1 * W.x + n2 * W.y + n3 * W.z;
+}
+
 void main() {
   vec3 n = normalize(vDir);                     // sphere normal (object == world, planet is static)
+  // Screen-space derivatives, taken here in uniform control flow.
+  vec3 dpdx = dFdx(vWorldPos);
+  vec3 dpdy = dFdy(vWorldPos);
+  gFootprint = max(max(length(dpdx), length(dpdy)), length(cameraPosition - vWorldPos) * uPixelAngle);
+  gTileMix = uAntiTile;
 
   // --- Macro normal from the height texture -----------------------------------------------------
   vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
   vec3 t1 = normalize(cross(up, n));
   vec3 t2 = cross(n, t1);
-  float e = 1.5707963 / uN * 0.75;
+  // Finite-difference step: one heightmap texel, or the pixel footprint when that is larger (avoids aliasing).
+  float e = max(1.5707963 / uN * 0.75, gFootprint / uRadius);
   vec3 dx = surfPos(normalize(n + t1 * e)) - surfPos(normalize(n - t1 * e));
   vec3 dy = surfPos(normalize(n + t2 * e)) - surfPos(normalize(n - t2 * e));
   vec3 Nm = normalize(cross(dx, dy));
@@ -118,17 +205,22 @@ void main() {
   vec2 uvX = vec2(p.z * axisSign.x, p.y);
   vec2 uvY = vec2(p.x * axisSign.y, p.z);
   vec2 uvZ = vec2(-p.x * axisSign.z, p.y);
+  vec2 gXx = vec2(dpdx.z * axisSign.x, dpdx.y), gXy = vec2(dpdy.z * axisSign.x, dpdy.y);
+  vec2 gYx = vec2(dpdx.x * axisSign.y, dpdx.z), gYy = vec2(dpdy.x * axisSign.y, dpdy.z);
+  vec2 gZx = vec2(-dpdx.x * axisSign.z, dpdx.y), gZy = vec2(-dpdy.x * axisSign.z, dpdy.y);
 
   // Per layer albedo+height (needed first for height blending).
   vec4 ah[4];
+  vec3 hwX[4], hwY[4], hwZ[4];   // hex blend weights per layer & projection, reused by normal/ORM
   for (int k = 0; k < 4; k++) {
     ah[k] = vec4(0.0);
+    hwX[k] = hwY[k] = hwZ[k] = vec3(1.0, 0.0, 0.0);
     if (wt[k] < 0.004) continue;
     float L = float(idx[k]);
     float sc = uLayerScale[idx[k]];
-    if (bw.x > 0.02) ah[k] += bw.x * texture(tAlbedo, vec3(uvX * sc, L));
-    if (bw.y > 0.02) ah[k] += bw.y * texture(tAlbedo, vec3(uvY * sc, L));
-    if (bw.z > 0.02) ah[k] += bw.z * texture(tAlbedo, vec3(uvZ * sc, L));
+    if (bw.x > 0.02) ah[k] += bw.x * triAlbedo(uvX, gXx, gXy, sc, L, hwX[k]);
+    if (bw.y > 0.02) ah[k] += bw.y * triAlbedo(uvY, gYx, gYy, sc, L, hwY[k]);
+    if (bw.z > 0.02) ah[k] += bw.z * triAlbedo(uvZ, gZx, gZy, sc, L, hwZ[k]);
   }
 
   // Height-based blend.
@@ -151,16 +243,16 @@ void main() {
     float sc = uLayerScale[idx[k]];
     albedo += hb[k] * ah[k].rgb * uLayerTint[idx[k]];
     if (bw.x > 0.02) {
-      tnX += hb[k] * (texture(tNormal, vec3(uvX * sc, L)).xyz * 2.0 - 1.0);
-      orm += hb[k] * bw.x * texture(tOrm, vec3(uvX * sc, L)).rgb;
+      tnX += hb[k] * triNormal(uvX, gXx, gXy, sc, L, hwX[k]);
+      orm += hb[k] * bw.x * triOrm(uvX, gXx, gXy, sc, L, hwX[k]);
     }
     if (bw.y > 0.02) {
-      tnY += hb[k] * (texture(tNormal, vec3(uvY * sc, L)).xyz * 2.0 - 1.0);
-      orm += hb[k] * bw.y * texture(tOrm, vec3(uvY * sc, L)).rgb;
+      tnY += hb[k] * triNormal(uvY, gYx, gYy, sc, L, hwY[k]);
+      orm += hb[k] * bw.y * triOrm(uvY, gYx, gYy, sc, L, hwY[k]);
     }
     if (bw.z > 0.02) {
-      tnZ += hb[k] * (texture(tNormal, vec3(uvZ * sc, L)).xyz * 2.0 - 1.0);
-      orm += hb[k] * bw.z * texture(tOrm, vec3(uvZ * sc, L)).rgb;
+      tnZ += hb[k] * triNormal(uvZ, gZx, gZy, sc, L, hwZ[k]);
+      orm += hb[k] * bw.z * triOrm(uvZ, gZx, gZy, sc, L, hwZ[k]);
     }
   }
   // Fade detail normals with distance (they alias into sparkle from orbit).
@@ -179,7 +271,7 @@ void main() {
   float metal = orm.b;
 
   // --- Macro variation ------------------------------------------------------------------------------
-  float macro = fbm3(n * 9.0) + 0.5 * fbm3(n * 37.0);
+  float macro = fbm3(n * 9.0) + 0.5 * fbm3(n * 37.0) * octaveFade(uRadius / 37.0 * 0.25);
   albedo *= 1.0 + uMacroVar * macro;
   float temp = climate.r, moist = climate.g, flow = climate.b;
 

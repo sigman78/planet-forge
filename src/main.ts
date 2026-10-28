@@ -257,6 +257,7 @@ async function main() {
   fSurf.addBinding(look, 'macroNormal', { label: 'relief normal', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'heightBlend', { label: 'height blend', min: 0, max: 2, step: 0.01 });
   fSurf.addBinding(look, 'triSharp', { label: 'triplanar sharp', min: 1, max: 32, step: 0.5 });
+  fSurf.addBinding(look, 'antiTile', { label: 'anti-tiling', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'macroVar', { label: 'macro variation', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'tintStrength', { label: 'world tint', min: 0, max: 1.5, step: 0.01 });
   fSurf.addBinding(look, 'wetness', { label: 'volatile wetness', min: 0, max: 1, step: 0.01 });
@@ -371,6 +372,7 @@ async function main() {
     shared.uTime.value = time;
     controller.update(dt);
     sky.update(camera, renderer.getPixelRatio());
+    view.updateFootprint(camera, renderer.domElement.height);
     camInfo.text = `alt ${controller.altitude.toFixed(1)} km\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
     pipeline.render(dt);
     fps.end();
