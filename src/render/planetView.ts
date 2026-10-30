@@ -293,6 +293,11 @@ export class PlanetView {
     U.uVertexSpacing.value = (this.shared.uPlanetRadius.value * Math.PI * 0.5) / Math.max(this.meshSegments, 1);
   }
 
+  /** Build a mesh density ahead of time (the 768 grid takes ~200 ms), so the first low descent does not hitch. */
+  prewarmMesh(segments: number) {
+    if (!this.geoCache.has(segments)) this.geoCache.set(segments, createCubeSphereGeometry(segments));
+  }
+
   setMeshSegments(segments: number) {
     if (segments === this.meshSegments) return;
     this.meshSegments = segments;

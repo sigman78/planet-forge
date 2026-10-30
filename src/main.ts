@@ -247,6 +247,9 @@ async function main() {
       lastFromCache = cached;
       history.replaceState(null, '', `#${encodeURIComponent(state.preset)}/${params.seed}`);
       view.setPlanet(planet);
+      // Dense low-altitude meshes are built while the world lands, not on the first dive.
+      const want = planet.radius / 1000 >= 600 ? 768 : 512;
+      (window.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 1500)))(() => view.prewarmMesh(want));
       view.group.visible = true;
       pois = planet.info?.pois ?? [];
       poiLabels.set(pois);

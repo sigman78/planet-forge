@@ -155,7 +155,7 @@ Newest entries at the bottom. Times are local.
     - Regional drift in roughness, brightness and ice hue.
     - Regional smooth/rough patches in the fine relief (two noise scales).
   - **Mesh:** up to 768 segments below 25 km on bodies >= 600 km (512 on smaller ones). `detailM` stops at the first
-    fully faded octave.
+    fully faded octave. The 768 grid takes ~220 ms to build, so it is pre-built at idle when a world lands.
   - **fps** (1080 Ti, 1400x850, 2/6/25 km and top-down, before -> after):
     - ice shell 95/90/87/89 -> 101/96/90/91
     - rust 104/89/85/104 -> 110/106/94/94
