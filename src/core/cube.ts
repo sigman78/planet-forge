@@ -73,6 +73,19 @@ export function dirToFace(x: number, y: number, z: number, out: FaceCoord = { fa
   return out;
 }
 
+/**
+ * Grid coordinates of a direction on a chosen face, extended past its edges (the direction need not lie on that
+ * face, only in its hemisphere). Used where a window of cells on one face reaches across an edge.
+ */
+export function faceST(face: number, x: number, y: number, z: number): { s: number; t: number } {
+  const b = FACE_BASIS[face];
+  const dn = Math.max(x * b.n[0] + y * b.n[1] + z * b.n[2], 1e-6);
+  return {
+    s: unwarp((x * b.u[0] + y * b.u[1] + z * b.u[2]) / dn),
+    t: unwarp((x * b.v[0] + y * b.v[1] + z * b.v[2]) / dn),
+  };
+}
+
 // ---- Texel layout with a 1-texel gutter --------------------------------------------------------
 // A face with interior resolution N is stored as T = N + 2 texels per side.
 // Texel index i in [0, T) has its centre at grid coordinate s_i = (i - 0.5) * 2/N - 1.

@@ -1,11 +1,12 @@
 // Ocean shell at sea level. Modes: 0 water, 1 lava, 2 ice.
 // VERTEX and FRAGMENT sections are split by the loader on '//#FRAGMENT'.
 uniform float uRadius;
+uniform float uShellLift;   // pushes the flat facets out so they no longer sag below the datum between vertices
 varying vec3 vDir;
 varying vec3 vWorldPos;
 void main() {
   vDir = normalize(position);
-  vec4 wp = modelMatrix * vec4(vDir * uRadius, 1.0);
+  vec4 wp = modelMatrix * vec4(vDir * uRadius * uShellLift, 1.0);
   vWorldPos = wp.xyz;
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
@@ -36,7 +37,8 @@ vec3 gDpdy;
 vec3 sampleWaterNormal(vec2 uv, vec2 gx, vec2 gy) { return textureGrad(tWaterNormal, uv, gx, gy).xyz * 2.0 - 1.0; }
 
 // Triplanar-free trick: build the wave normal in the local tangent frame of the sphere.
-vec3 waveNormal(vec3 n, vec3 p, float strength) {
+// t: animation time (0 = static, for frozen seas).
+vec3 waveNormal(vec3 n, vec3 p, float strength, float t) {
   vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
   vec3 t1 = normalize(cross(up, n));
   vec3 t2 = cross(n, t1);
@@ -44,7 +46,6 @@ vec3 waveNormal(vec3 n, vec3 p, float strength) {
   // because we use world xyz, blended across the three dominant axes.
   vec3 bw = pow(abs(n), vec3(4.0));
   bw /= dot(bw, vec3(1.0));
-  float t = uTime;
   vec2 d1 = vec2(0.02, 0.013) * t;
   vec2 d2 = vec2(-0.011, 0.017) * t;
   vec3 acc = vec3(0.0);
@@ -67,7 +68,9 @@ void main() {
   vec3 n = normalize(vDir);
   float h = textureLod(tHeight, cubeTexCoord(n, uN), 0.0).r;   // seabed elevation, metres (negative under water)
   float depth = -h;
-  if (depth < -2.0) discard;
+  // Water fades out at the shore (alpha below). Lava relies on the depth test: the baked height disagrees with the
+  // mesh by tens of metres on cliffs, and discarding on it cut holes in the shell.
+  if (uMode == 0 && depth < -2.0) discard;
 
   vec3 V = normalize(cameraPosition - vWorldPos);
   vec3 L = uSunDir;
@@ -88,7 +91,7 @@ void main() {
     float hot = smoothstep(0.0, 400.0, depth) * 0.6 + 0.4;
     float heat = clamp(cracks * 1.4 + 0.25 * (fbm3(q * 0.05 - uTime * 0.002) + 0.5) * hot, 0.0, 1.5);
     vec3 crust = vec3(0.035, 0.03, 0.03);
-    vec3 N = waveNormal(n, vWorldPos, 0.15);
+    vec3 N = waveNormal(n, vWorldPos, 0.15, uTime);
     vec3 col = crust * (max(dot(N, L), 0.0) * sunCol * horizon / PI + uSkyAmbient * dayAmb);
     vec3 glow = uLavaColor * uLavaGlow * heat * heat;
     gl_FragColor = vec4(col + glow, 1.0);
@@ -100,7 +103,7 @@ void main() {
     vec3 q = n * 300.0;
     float ridges = pow(1.0 - abs(snoise(q)), 6.0);
     vec3 albedo = mix(vec3(0.55, 0.7, 0.8), vec3(0.92, 0.95, 1.0), clamp(0.6 + 0.4 * fbm3(q * 0.2) + ridges * 0.3, 0.0, 1.0));
-    vec3 N = waveNormal(n, vWorldPos, 0.25);
+    vec3 N = waveNormal(n, vWorldPos, 0.25, 0.0);   // frozen: no drifting waves
     float NdL = max(dot(N, L), 0.0);
     vec3 H = normalize(V + L);
     float spec = pow(max(dot(N, H), 0.0), 60.0) * 0.4;
@@ -111,7 +114,7 @@ void main() {
 
   // ---- Water ----
   float strength = uWaveStrength * (1.0 - smoothstep(50.0, 1500.0, camDist) * 0.85);
-  vec3 N = waveNormal(n, vWorldPos, strength);
+  vec3 N = waveNormal(n, vWorldPos, strength, uTime);
   float NdV = max(dot(N, V), 1e-3);
   float NdL = max(dot(N, L), 0.0);
   float fres = 0.02 + 0.98 * pow(1.0 - NdV, 5.0);

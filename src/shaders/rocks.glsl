@@ -4,6 +4,7 @@ uniform sampler2D tRock;
 
 varying vec3 vWorldPos;
 varying vec3 vLocal;     // shape space (unit rock), y up
+varying vec3 vOffset;    // world-oriented offset from the rock's base, unit rock scale (small numbers: precise derivatives)
 varying float vRadiusM;
 varying float vLayer;
 varying float vShadow;
@@ -35,8 +36,10 @@ void main() {
   q *= 1.0 + 0.3 * snoise(q * 1.4 + seed * 91.7);
   q *= vec3(0.9 + 0.6 * fract(seed * 13.17), 0.45 + 0.45 * fract(seed * 7.31), 0.8 + 0.4 * fract(seed * 3.93));
   q.y = max(q.y, -0.3);
-  vec3 wp = P + (ax * q.x + up * (q.y + 0.15) + az * q.z) * r;
+  vec3 off = ax * q.x + up * (q.y + 0.15) + az * q.z;
+  vec3 wp = P + off * r;
   vWorldPos = wp;
+  vOffset = off;
   vLocal = q;
   vRadiusM = r * 1000.0;
   vLayer = floor(t2.x);
@@ -58,14 +61,16 @@ uniform vec3  uFillColor;
 
 varying vec3 vWorldPos;
 varying vec3 vLocal;
+varying vec3 vOffset;
 varying float vRadiusM;
 varying float vLayer;
 varying float vShadow;
 varying float vSeed;
 
 void main() {
-  // Faceted blocks: the flat triangle normal reads as fractured stone.
-  vec3 N = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+  // Faceted blocks: the flat triangle normal reads as fractured stone. Taken from the rock-relative offset: world
+  // positions are ~1e3 km, where float steps (cm) exceed the pixel-to-pixel change up close and the normal shimmers.
+  vec3 N = normalize(cross(dFdx(vOffset), dFdy(vOffset)));
   vec3 V = normalize(cameraPosition - vWorldPos);
   if (dot(N, V) < 0.0) N = -N;
   vec3 n = normalize(vWorldPos);

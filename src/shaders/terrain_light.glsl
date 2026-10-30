@@ -8,7 +8,8 @@ uniform float uShadows;   // cast-shadow strength (0 = off)
 // GGX / Smith / Schlick.
 uniform float uSpecular;   // specular scale (dusty regolith has almost no sheen)
 
-vec3 brdf(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 L) {
+// specScale: specular multiplier (callers usually pass uSpecular).
+vec3 brdfS(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 L, float specScale) {
   vec3 H = normalize(V + L);
   float NdL = max(dot(N, L), 0.0);
   float NdV = max(dot(N, V), 1e-4);
@@ -26,7 +27,10 @@ vec3 brdf(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 L) {
   vec3 kd = (1.0 - F) * (1.0 - metal);
   // Opposition surge: regolith brightens when lit from behind the viewer (shadow hiding).
   float surge = 1.0 + 0.35 * pow(max(dot(V, L), 0.0), 6.0) * rough;
-  return (kd * albedo / PI * surge + spec * uSpecular) * NdL;
+  return (kd * albedo / PI * surge + spec * specScale) * NdL;
+}
+vec3 brdf(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 L) {
+  return brdfS(albedo, rough, metal, N, V, L, uSpecular);
 }
 
 // Soft cast shadow from the baked heightmap: march toward the sun with growing steps and keep the

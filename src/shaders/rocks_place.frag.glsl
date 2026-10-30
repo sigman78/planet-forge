@@ -1,15 +1,19 @@
-// Rock placement: one 3-texel strip per instance in a GRID x GRID window of world cells on one cube face.
+// Rock placement: one 3-texel strip per instance in GRID x GRID windows of world cells, one window per cube face
+// the rock area touches (stacked vertically). A cell belongs to the face it lies on; cells past a window's face
+// edge are left empty (the neighbour face's window has them).
 // Texel 0: position (km) and radius (km, 0 = no rock). Texel 1: mesh-triangle normal and a seed.
 // Texel 2: x = splat layer the rock is made of + sun shadow * 0.99.
 // Cells are hashed by their world index, so rocks stay put while the window follows the camera.
 #define GRID 96
-uniform vec3  uAnchor;      // face, cell i, cell j of the window centre
+uniform vec3  uAnchor[3];   // per window: face, cell i, cell j of the window centre
+uniform vec2  uCenter[3];   // per window: unsnapped centre in that face's (extended) grid coordinates
+uniform int   uWindows;
 uniform float uCellS;       // cell size in face coordinates
 uniform float uRMin, uRMax; // km
 uniform float uDensity;
 uniform float uLevel;
 uniform float uSegments;    // terrain mesh segments per face side (rocks sit on its triangles)
-uniform float uOcean;       // 1 when the sea shell is drawn (no rocks below the datum)
+uniform float uOcean;       // 1 when the world has a sea or sea ice (no rocks at or below the datum)
 uniform float uClusterKm;   // size of rock fields
 uniform vec3  uCamPos;
 uniform float uVertexSpacing;   // km between terrain mesh vertices
@@ -52,20 +56,22 @@ vec3 meshVertex(float face, float i, float j) {
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
   int comp = px.x % 3;
-  ivec2 id = ivec2(px.x / 3, px.y);
-  ivec2 cell = ivec2(uAnchor.yz) + id - GRID / 2;
-  int face = int(uAnchor.x + 0.5);
+  int win = px.y / GRID;
+  if (win >= uWindows) { gl_FragColor = vec4(0.0); return; }
+  ivec2 id = ivec2(px.x / 3, px.y - win * GRID);
+  vec3 anchor = uAnchor[win];
+  ivec2 cell = ivec2(anchor.yz) + id - GRID / 2;
+  int face = int(anchor.x + 0.5);
   vec3 h = hash3(ivec3(cell, face * 8 + int(uLevel)));
   vec3 h2 = hash3(ivec3(cell.x + 7919, cell.y - 104729, face * 8 + int(uLevel) + 64));
   vec2 st = -1.0 + (vec2(cell) + 0.1 + 0.8 * h.xy) * uCellS;
-  if (max(abs(st.x), abs(st.y)) > 1.45) { gl_FragColor = vec4(0.0); return; }
+  if (max(abs(st.x), abs(st.y)) > 1.0) { gl_FragColor = vec4(0.0); return; }
 
-  // The mesh face and quad that own this point (cells past the anchor face's edge land on the neighbour).
-  vec3 sf = dirToFace(faceDir(float(face), st));
-  vec2 g = (sf.xy + 1.0) * 0.5 * uSegments;
+  // The mesh quad that owns this point.
+  vec2 g = (st + 1.0) * 0.5 * uSegments;
   vec2 ij = clamp(floor(g), 0.0, uSegments - 1.0);
   vec2 fr = clamp(g - ij, 0.0, 1.0);
-  float F = sf.z;
+  float F = float(face);
   vec3 A = meshVertex(F, ij.x, ij.y);
   vec3 B = meshVertex(F, ij.x + 1.0, ij.y);
   vec3 C = meshVertex(F, ij.x + 1.0, ij.y + 1.0);
@@ -103,13 +109,15 @@ void main() {
   float field = smoothstep(-0.25, 0.55, snoise(dir * (uRadius / uClusterKm) + uLevel * 13.1));
   dens *= field * 1.6 * uDensity;
   float hM = textureLod(tHeight, tc, 0.0).r;
-  if (uOcean > 0.5 && hM < 0.0) dens = 0.0;
+  // Judged on the placed point, not the baked height: the mesh and the bilinear heightmap disagree on steep shores.
+  if (uOcean > 0.5 && (hM < 3.0 || length(P) < uRadius + 0.0005)) dens = 0.0;
 
   // Power-law sizes (many small, few large).
   const float ALPHA = 2.5;
   float r = uRMin * pow(1.0 - h2.x * (1.0 - pow(uRMin / uRMax, ALPHA)), -1.0 / ALPHA);
-  // Shrink toward the window edge so blocks entering or leaving the window grow in instead of popping.
-  vec2 e = abs(vec2(id - GRID / 2)) / float(GRID / 2);
+  // Shrink toward the window edge so blocks entering or leaving the window grow in instead of popping. Measured from
+  // the unsnapped centre in the rock's own face grid, so it changes smoothly and the same way in every window.
+  vec2 e = abs(st - uCenter[win]) / (float(GRID / 2 - 1) * uCellS);
   r *= (1.0 - smoothstep(0.7, 1.0, max(e.x, e.y))) * step(h.z, dens);
 
   if (comp == 0) gl_FragColor = vec4(P, r);

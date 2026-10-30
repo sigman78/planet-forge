@@ -53,11 +53,11 @@ export function computeFigureM(data: PlanetData): Float32Array {
 }
 
 /** Upload the figure in km (with the look's exaggeration). Returns the highest point in km. */
-export function updateFigureTexture(tex: THREE.DataTexture, figM: Float32Array, kmPerM: number, seaFloorScale: number): number {
+export function updateFigureTexture(tex: THREE.DataTexture, figM: Float32Array, kmPerM: number, seaFloorScale: number, seaIce = false): number {
   const arr = tex.image.data as Uint16Array;
   let max = 0;
   for (let i = 0; i < figM.length; i++) {
-    const m = figM[i];
+    const m = seaIce ? Math.max(figM[i], 0) : figM[i];   // frozen seas are flat at the datum
     const km = (m < 0 ? m * seaFloorScale : m) * kmPerM;
     max = Math.max(max, km);
     arr[i] = THREE.DataUtils.toHalfFloat(km);

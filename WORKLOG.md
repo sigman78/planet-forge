@@ -187,3 +187,112 @@ Newest entries at the bottom. Times are local.
     - The window re-hashes when its anchor crosses a cube-face edge.
     - Decals can clip where a long shadow crosses a mesh edge.
     - The rust texture normal still reads as streaky "fur" at very low sun.
+
+## 2026-10-30 — rocks across cube edges, volumetrics off, mood grade
+
+- **Rocks no longer reshuffle at cube-face edges.** Before, each level's window ran on the anchor face's cell grid
+  past the edge. When the window centre crossed the edge, every cell was re-indexed and re-hashed in the new face's
+  grid. Now each cell belongs to the face it lies on. Each level renders one 96x96 window per face that its rock area
+  touches (up to 3 at a corner), stacked in a 288x288 target. Cells off a window's own face exit before any terrain
+  work, so near an edge the placement cost stays about the same.
+  - The edge fade is measured from the unsnapped centre in the rock's own face grid. It changes smoothly
+    (it used to step by a cell as the window snapped) and the same way in every window.
+  - Check: swept the camera east across lon 45° (face 4 to face 0, rust 24672) in 0.02° steps and read back
+    the placement targets. Old code: 0% of rocks survive the flip. New code: 100% at every step for levels 1-2.
+    A second sweep at 0.4 km over lon 135° (face 0 to 5, lat -29°): level 0 keeps 100%, level 1 99.93% (a couple of
+    rocks moved over 3 m at one step, most likely a mesh-density change). The 3-face corner case is untested.
+- **HQ volumetrics are off by default** (`state.hq`). The terrain shadow map's dust shafts added little to the
+  picture. The toggle and the 'dust shafts' slider stay in the Atmosphere folder.
+- **Mood grade** (`mood grade` slider, Atmosphere folder, 0-3, default 2), at the end of the atmosphere pass in HDR:
+  - **Strength:** set by the air's extinction at the camera (`1 - exp(-ext * 80 km)`), and off on the night side
+    (planetshine lights the ground there, not this sky). Orbit and airless worlds are untouched.
+  - **Scope:** grades only the scene seen through the air. The inscatter is added after the grade, since it already
+    has the sky's colour (Fable's review: grading it double-tints the haze).
+  - **Tint:** shadows take the colour of the sky's scattered sunlight (Rayleigh + Mie + haze colour, times the sun
+    colour, chroma x1.4). Sunlit tones keep the sun's colour.
+  - **Dust veil:** dust and haze lower contrast (around a pivot set by exposure) and saturation. Clean Rayleigh air
+    barely does.
+  - **Result:** at the default 2, Earth-like air gives clearly cooler shadows and sunlit sand stays warm (1 was too
+    subtle once the inscatter was left out). On the rust world it stays mild, because its sky is already the ground's
+    colour.
+- **Fable review of close-up materials:** `docs/ideas-closeup-materials.md`. It covers why the detail textures override
+  the relief, a parent-mineral -> weathering-products material model, and ranked cheap changes.
+
+## 2026-10-30 — rock normal precision, ice sheen back
+
+- **Rock facets shimmered** (large planets, grazing light). The flat facet normal came from `dFdx/dFdy` of the
+  world position, which is ~1e3 km from the planet centre. There float32 steps (6-25 cm) exceed the pixel-to-pixel
+  change on a close block, so the normal was mostly rounding noise and changed on every camera move. It now comes
+  from the small rock-relative offset (`vOffset`). Check on rust radius 2000 km with a 10° sun, nudging the camera
+  ~2 cm: pixels on a 77 m block that change sharply went from 52 to 24. The rest are the terrain's own changes.
+- **Ice lost its sheen and went plain or dirty white** after the close-up pass (`58aa381`). Causes and fixes:
+  - **Gloss floor:** the 0.32 roughness floor and +0.3 distance roughening for glossy layers are now 0.22 and +0.15.
+    The specular AA kernel went from 0.5x variance (cap 0.18) to 0.3x (cap 0.1).
+  - **Dirty white:** ice and salt hollows collected the grey dust colour. They now collect frost: the ice's own
+    albedo, brighter and a little desaturated, staying fairly glossy.
+  - **Plain white:** ice/salt textures had been shrunk 4x / 3.3x with normals at 0.35 / 0.45, so from mid range the
+    crack grain averaged out. They are now 2.5x / 2.2x with normals at 0.55 / 0.6.
+  - **Glints:** the old sheen was mostly glints from aliased sub-pixel normals, which was the shimmer. They are back as
+    *world-anchored glints*: each world cell of ~1.5 px holds (or not) one random facet (~0.35 rad tilt) that flashes
+    when it mirrors the sun. Two power-of-two cell sizes cross-fade with the footprint, and glints fade beyond
+    ~50 m/px. They twinkle with the view but don't crawl. Shimmer check (ice shell 4242, 8 km, 18° sun, ~1 m camera
+    nudge): pixels that change sharply, pre-close-up build 128, now 1.
+  - **Highlight toned down:** the smooth specular lobe on ice/salt is halved (`brdfS` takes a specular scale). Under
+    a 6x sun at grazing angles it blew out to plain white; the glints carry the sparkle.
+  - **Glint tuning:** at 50% facet density, a 6.8° tolerance and 12x strength, the glints lifted the whole field
+    (near-ground mean 231 vs 178 pre-close-up). Now 30% density, ~4.8°→2.1° tolerance, 5x: mean 193, crack detail
+    visible through the highlight.
+- **Frozen seas no longer move.** Ocean mode 2 (sea ice, e.g. ice shell) used the water's wave normals, which drift
+  with `uTime`, so the ice looked like slow water. `waveNormal` takes the time explicitly; sea ice passes 0.
+
+## 2026-10-30 — frozen seas folded into the terrain (Fable inspection)
+
+- **Owner report:** a crack in the sea ice you could see under, and the surface shifting between the lit and debug
+  views low over the ice shell. Fable diagnosed it (runtime-only patches, red = visible terrain below the datum,
+  pixel counts over 8 shoreline spots):
+  - **Hole at steep shores:** `ocean.glsl` discarded shell pixels where the *bilinear baked* height was over 2 m.
+    The mesh is vertex-sampled and linear across ~1 km triangles, so on cliffs whole triangles sat up to ~100 m
+    below the datum with the ice above them discarded.
+  - **Lattice on gentle shores:** the 160-segment shell's flat facets sag R·θ²/4 (~8.5 m at R 352 km) between
+    vertices, and shallow seabed poked through.
+  - **Debug shift:** debug views hide the shell, and `surfaceRadiusKm` keyed the camera floor on
+    `ocean.visible`. The floor dropped to the seabed, so the camera re-tilted (20° -> 25°) and `near` jumped
+    0.15 -> 1 km.
+- **Fix (owner's idea): frozen seas are part of the terrain.**
+  - **Shape:** `elevationKm` clamps to the datum when `uSeaIce` is set. That one point feeds the mesh, rock placement,
+    both sun-shadow marches (terrain and HQ map), the camera floor (CPU mirror), the atmosphere ground radius and the
+    figure texture.
+  - **Material:** the fragment classifies ice by the per-pixel height (a smooth shoreline; the mesh gave a stair of
+    triangle edges) and keeps it off ground whose drawn height visibly climbs. There it flattens the macro normal,
+    swaps the splat to the ice layer (cracks, gloss, glints, frost come along), tints a touch bluer, and drops the
+    seabed AO and settling.
+  - **The shell is now only for water and lava.**
+- **Shell fixes for water/lava:**
+  - Lava no longer discards on the baked height; the depth test makes the shore.
+  - The shell's vertices are pushed out by θ²/4 so its facets no longer sag below the datum.
+  - `seaSolid` (any sea) is the camera floor and the rock mask, independent of whether the shell is drawn.
+  - Rocks are masked within 3 m of the datum or on the placed point at the datum.
+- **Check (ice shell 4242):**
+  - Debug view 1 over the basin at 0.6 km: camera position, pitch and near are identical to the lit view.
+  - The steep shore at lat 0.4631, lon -2.7096 shows hills rising out of flat ice with smooth shorelines.
+  - Water and lava modes still render through the shell.
+- **Open:** water still fades on the baked height at the shore (`alpha *= smoothstep(-2, 1, depth)`), which can
+  leave straight-edged gaps at steep shores (Fable's follow-up).
+
+## 2026-10-30 — camera without gimbal lock, keyboard fly
+
+- **Gimbal lock (user):** the camera stored lat/lon/heading and built its frame from the world up. Orbiting stopped at
+  ±89° latitude, the heading spun near the poles, and east-west drags sped up as 1/cos(lat).
+  - `controls.ts` now keeps one quaternion frame (right, local up, forward) and eases it with a slerp. Orbit drags,
+    throws (an angular-velocity vector), auto-rotate and heading turns are all rotations of that frame.
+  - lat, lon and heading are getters read from the frame, so the HUD, the tour and `setView` keep their API.
+  - `flyTo` moves along the great circle, carries the heading with it and blends in the remaining twist. It lands
+    exactly on the requested lat/lon/heading.
+  - Verified: dragging north runs straight over the pole (lat 1.56 → 1.08 on the far side, heading 0 → π), and the camera has no roll.
+- **Keyboard fly (user):**
+  - W/S fly along the ray under the cursor, so the point being flown at stays under the cursor (screen centre when the cursor is off the canvas).
+  - A/D strafe, E/Q go up/down, arrows turn left/right (up/down = W/S), shift is ×4.
+  - Speed is 1.2 × the height above the ground per second, so the approach slows near the ground and the terrain clamp stops it.
+  - Keys cancel the tour or a flight, and are ignored while typing in a pane field.
+  - Altitude below the datum (deep basins) now eases linearly instead of in log space.
+  - Help line updated.

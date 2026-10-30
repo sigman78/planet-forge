@@ -38,6 +38,7 @@ uniform vec3  uLayerDebugColor[LAYERS];
 uniform vec3  uUnitColors[32];
 
 varying vec3 vDir;
+varying float vElevM;
 varying vec3 vWorldPos;
 
 
@@ -209,6 +210,36 @@ vec3 detailGrad(vec3 d, float h, vec4 fineStyle) {
   return G * (uDetailAmp * uHeightScale);
 }
 
+// Ice glints. Sub-pixel facets used to flash as aliasing; instead each world cell of ~1.5 px holds (or not) one
+// random facet that glints when it mirrors the sun. The cells are anchored to the ground and sized from the
+// footprint (two power-of-two levels cross-fade), so glints twinkle with the view but never crawl.
+uvec3 glintPcg(uvec3 v) {
+  v = v * 1664525u + 1013904223u;
+  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+  v ^= v >> 16u;
+  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+  return v;
+}
+float glintLevel(vec3 p, float size, vec3 n, vec3 t, vec3 b, vec3 Hh) {
+  vec3 h = vec3(glintPcg(uvec3(ivec3(floor(p / size))))) * (1.0 / 4294967296.0);
+  if (h.z > 0.3) return 0.0;    // under a third of the cells hold a facet
+  float th = 0.35 * sqrt(-2.0 * log(max(h.x, 1e-6)));   // tilt from the ground normal, ~0.35 rad spread
+  float ph = 6.2831853 * h.y;
+  vec3 m = n * cos(th) + (t * cos(ph) + b * sin(ph)) * sin(th);
+  return smoothstep(0.9965, 0.9993, dot(m, Hh));
+}
+float iceGlints(vec3 p, vec3 n, vec3 Hh, float fp) {
+  float fade = 1.0 - smoothstep(0.03, 0.15, fp);   // beyond ~50 m/px the glints would only be noise
+  if (fade <= 0.0) return 0.0;
+  vec3 t = normalize(cross(n, abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  vec3 b = cross(n, t);
+  float lv = log2(fp * 1.5 * 1024.0);   // cell size in units of 2^-10 km (~1 m)
+  float l0 = floor(lv), k = lv - l0;
+  float s0 = exp2(l0) / 1024.0;
+  float g = mix(glintLevel(p, s0, n, t, b, Hh), glintLevel(p + vec3(0.37, 0.61, 0.19) * s0, 2.0 * s0, n, t, b, Hh), k);
+  return g * fade;
+}
+
 void main() {
   vec3 n = normalize(vDir);                     // sphere normal (object == world, planet is static)
   // Screen-space derivatives, taken here in uniform control flow.
@@ -233,6 +264,11 @@ void main() {
   // Per-texel gradients filter smoothly (bilinear finite differences of heights are faceted per texel) and
   // their mips average slopes instead of aliasing from orbit. Below the datum the sea-floor scale applies.
   vec3 Gh = textureLod(tGrad, tc, dataLod).xyz * uHeightScale * mix(uSeaFloorScale, 1.0, smoothstep(-40.0, 40.0, hM));
+  // Frozen sea: the mesh is flat at the datum there (elevationKm). The shoreline follows the per-pixel height (a
+  // smooth curve; the mesh would give a stair of triangle edges), and the drawn height keeps the ice off ground that
+  // visibly climbs. Flat macro normal, ice material, no seabed AO.
+  float iceK = uSeaIce * (1.0 - smoothstep(-1.0, 3.0, hM)) * (1.0 - smoothstep(5.0, 30.0, vElevM));
+  Gh *= 1.0 - iceK;
   Gh -= dot(Gh, n) * n;
   vec3 Nm = normalize(n - Gh);
   vec4 climate = textureLod(tClimate, tc, dataLod);
@@ -243,6 +279,7 @@ void main() {
   float w[LAYERS];
   w[0] = s0.r; w[1] = s0.g; w[2] = s0.b; w[3] = s0.a;
   w[4] = s1.r; w[5] = s1.g; w[6] = s1.b; w[7] = s1.a;
+  if (iceK > 0.0) for (int i = 0; i < LAYERS; i++) w[i] = mix(w[i], i == 6 ? 1.0 : 0.0, iceK);
 
   // Procedural relief: fine style follows the local materials (dunes on sand, cracks on ice, ...).
   vec4 fineStyle = vec4(0.0);
@@ -385,16 +422,17 @@ void main() {
   tnZ = vec3(tnZ.xy + Nm.xy, abs(tnZ.z) * Nm.z);
   vec3 N = normalize(tnX.zyx * bw.x + tnY.xzy * bw.y + tnZ.xyz * bw.z);
   vec3 dNx = dFdx(N), dNy = dFdy(N);
-  float kernelA2 = min(0.5 * (dot(dNx, dNx) + dot(dNy, dNy)), 0.18);
+  float kernelA2 = min(0.3 * (dot(dNx, dNx) + dot(dNy, dNy)), 0.1);
 
   float ao = mix(1.0, orm.r, 0.8);
-  float terrAO = mix(1.0, textureLod(tAO, tc, dataLod).r, uTerrainAO);
+  float terrAO = mix(1.0, textureLod(tAO, tc, dataLod).r, uTerrainAO * (1.0 - iceK));
   // Dry rock and dust are very rough; ice (6) and salt (7) keep their texture roughness.
   float glossy = 0.0;
   for (int k = 0; k < NLAY; k++) if (idx[k] >= 6) glossy += hb[k];
-  // Ice and salt keep some gloss, but never a mirror under a 6x sun; far away the unresolved relief roughens them more.
-  float rough = clamp(mix(mix(uRoughMin, 1.0, orm.g), max(orm.g, 0.32), glossy), 0.05, 1.0);
-  rough = min(rough + 0.3 * glossy * smoothstep(0.1, 0.6, gFootprint * uHexFreq), 1.0);
+  // Ice and salt keep their gloss, but never a mirror under a 6x sun; far away the unresolved relief roughens them a
+  // little. Sparkle is the specular AA's job below: a high floor here only dulled the sheen.
+  float rough = clamp(mix(mix(uRoughMin, 1.0, orm.g), max(orm.g, 0.22), glossy), 0.05, 1.0);
+  rough = min(rough + 0.15 * glossy * smoothstep(0.1, 0.6, gFootprint * uHexFreq), 1.0);
   rough = clamp(rough + 0.08 * gRegion * uWeathering, 0.05, 1.0);
   // Specular anti-aliasing (Tokuyoshi & Kaplanyan): normal variance across the pixel widens the lobe, so
   // sub-pixel bumps stop flashing as sparkles. alpha^2 = rough^4 in brdf().
@@ -404,11 +442,13 @@ void main() {
 
   // --- Macro variation ------------------------------------------------------------------------------
   albedo *= 1.0 + uMacroVar * macro;
+  albedo *= mix(vec3(1.0), vec3(0.92, 0.98, 1.06), iceK);   // sea ice: a touch bluer than land ice
   // Weathering: fine dust settles in hollows and on flats, slopes shed it (fresher, brighter scree);
-  // a slow regional drift in brightness, and in hue on ice.
-  float settle = smoothstep(0.85, 0.6, textureLod(tAO, tc, dataLod).r) * flatK * uWeathering;
-  albedo = mix(albedo, uLayerTint[0] * uLayerMean[0], 0.5 * settle);
-  rough = mix(rough, 1.0, settle * (1.0 - glossy));
+  // a slow regional drift in brightness, and in hue on ice. Ice and salt hollows collect frost, not grey regolith.
+  float settle = smoothstep(0.85, 0.6, textureLod(tAO, tc, dataLod).r) * flatK * uWeathering * (1.0 - iceK);
+  vec3 frost = mix(vec3(dot(albedo, vec3(0.2126, 0.7152, 0.0722))), albedo, 0.6) * 1.12;
+  albedo = mix(albedo, mix(uLayerTint[0] * uLayerMean[0], frost, glossy), 0.5 * settle);
+  rough = mix(rough, mix(1.0, 0.45, glossy), settle * mix(1.0, 0.4, glossy));
   albedo *= 1.0 + uWeathering * (0.12 * steep + 0.06 * gRegion);
   albedo *= mix(vec3(1.0), vec3(1.0 - 0.03 * gRegion, 1.0, 1.0 + 0.04 * gRegion), glossy * uWeathering);
   float temp = climate.r, moist = climate.g, flow = climate.b;
@@ -433,7 +473,13 @@ void main() {
   float micro = clamp(abs(NoL) + 2.0 * ao * ao - 1.0, 0.0, 1.0);
   // Cavity: occluded spots also catch less direct light (sun from a narrower aperture).
   float cavity = mix(1.0, terrAO, 0.45);
-  vec3 col = brdf(albedo, rough, metal, N, V, Lsun) * sunCol * horizon * shadow * micro * cavity;
+  // Ice and salt: half the smooth lobe. Under a 6x sun at grazing angles it blew out to plain white; the glints
+  // below carry the sparkle.
+  vec3 col = brdfS(albedo, rough, metal, N, V, Lsun, uSpecular * mix(1.0, 0.5, glossy)) * sunCol * horizon * shadow * micro * cavity;
+  if (glossy > 0.02) {
+    float gl = iceGlints(vWorldPos, n, normalize(V + Lsun), fpIso) * glossy * (1.0 - 0.6 * settle);
+    col += sunCol * horizon * shadow * cavity * gl * uSpecular * 5.0;
+  }
   float dayAmb = smoothstep(-0.25, 0.3, dot(n, Lsun));
   col += albedo * ao * terrAO * (uSkyAmbient * dayAmb + vec3(uAmbient)) * (0.6 + 0.4 * dot(N, n));
   // Planetshine: the giant's disc lights the night side softly (wrapped Lambert, no shadows).

@@ -70,11 +70,12 @@ const LAYER_STYLE: [number, number, number, number][] = [
   [0, 0.15, 0.85, 0], // salt
 ];
 
-// Crack-textured layers (ice Ice002, salt Ground031) tile 3-4x smaller than the rest and keep a weaker texture
+// Crack-textured layers (ice Ice002, salt Ground031) tile 2-2.5x smaller than the rest and keep a weaker texture
 // normal, so their texture cracks read as fine fracture grain inside the procedural plates instead of a second
 // plate net at the same size.
-const LAYER_SCALE_MUL = [1, 1, 1, 1, 1, 1, 4, 3.3];
-const LAYER_NORMAL_MUL = [1, 1, 0.8, 1, 1, 1, 0.35, 0.45];
+const OCEAN_SEGMENTS = 160;
+const LAYER_SCALE_MUL = [1, 1, 1, 1, 1, 1, 2.5, 2.2];
+const LAYER_NORMAL_MUL = [1, 1, 0.8, 1, 1, 1, 0.55, 0.6];
 
 export interface LookParams {
   heightExaggeration: number;
@@ -186,6 +187,8 @@ export class PlanetView {
   private geoCache = new Map<number, THREE.BufferGeometry>();
   private placeholder: THREE.DataArrayTexture;
   private figureM: Float32Array | null = null;
+  /** The world has a sea or sea ice: it is a floor for the camera and rocks, drawn or not. */
+  seaSolid = false;
   private coverage: number[] | null = null;
 
   constructor(
@@ -210,6 +213,7 @@ export class PlanetView {
       uRadius: shared.uPlanetRadius,
       uHeightScale: u(0.001),
       uSeaFloorScale: u(DEFAULT_LOOK.seaFloorScale),
+      uSeaIce: u(0),
       uDetailAmp: u(DEFAULT_LOOK.detailAmp),
       uDetailScale: u(DEFAULT_LOOK.detailScale),
       uPixelAngle: u(0.001),
@@ -263,6 +267,7 @@ export class PlanetView {
         ...shared,
         ...planetU,
         tWaterNormal: u(layers.waterNormal),
+        uShellLift: u(1),
         uMode: u(0),
         uDeepColor: u(new THREE.Color(DEFAULT_LOOK.deepColor)),
         uShallowColor: u(new THREE.Color(DEFAULT_LOOK.shallowColor)),
@@ -280,7 +285,10 @@ export class PlanetView {
     });
 
     this.terrain = new THREE.Mesh(new THREE.BufferGeometry(), this.terrainMat);
-    this.ocean = new THREE.Mesh(createCubeSphereGeometry(160), this.oceanMat);
+    this.ocean = new THREE.Mesh(createCubeSphereGeometry(OCEAN_SEGMENTS), this.oceanMat);
+    // Flat facets sag R*theta^2/4 below the sphere at quad centres (~8 m at R 350 km): circumscribe it instead.
+    const th = Math.PI / 2 / OCEAN_SEGMENTS;
+    this.oceanMat.uniforms.uShellLift.value = 1 + (th * th) / 4;
     for (const m of [this.terrain, this.ocean]) m.frustumCulled = false;
     this.ocean.renderOrder = 1;
     this.group.add(this.terrain, this.ocean);
@@ -361,14 +369,17 @@ export class PlanetView {
     const U = this.terrainMat.uniforms;
     U.uHeightScale.value = 0.001 * look.heightExaggeration;
     U.uSeaFloorScale.value = look.seaFloorScale;
+    const seaIce = look.oceanMode === 2;
+    U.uSeaIce.value = seaIce ? 1 : 0;
+    this.seaSolid = look.oceanMode !== 3;
     if (this.data) {
-      const minH = this.data.minHeight;
+      const minH = seaIce ? Math.max(this.data.minHeight, 0) : this.data.minHeight;
       const minKm = (minH < 0 ? minH * look.seaFloorScale : minH) * 0.001 * look.heightExaggeration;
       this.shared.uGroundRadius.value = this.data.radius / 1000 + Math.min(minKm, 0) - 0.3;
     }
     if (this.figureM) {
       const S = this.shared;
-      S.uFigureMax.value = updateFigureTexture(S.tFigure.value as THREE.DataTexture, this.figureM, 0.001 * look.heightExaggeration, look.seaFloorScale);
+      S.uFigureMax.value = updateFigureTexture(S.tFigure.value as THREE.DataTexture, this.figureM, 0.001 * look.heightExaggeration, look.seaFloorScale, seaIce);
       S.uFigureOn.value = 1;
     }
     U.uDetailAmp.value = look.detailAmp;
@@ -437,7 +448,8 @@ export class PlanetView {
     // Molten calderas on land glow only on lava worlds.
     (U.uLavaColor.value as THREE.Color).set(look.lavaColor);
     U.uLavaGlow.value = look.oceanMode === 1 ? look.lavaGlow : 0;
-    this.ocean.visible = look.oceanMode !== 3 && look.debug === 0;
+    // Frozen seas are drawn by the terrain itself (uSeaIce); the shell is for water and lava.
+    this.ocean.visible = (look.oceanMode === 0 || look.oceanMode === 1) && look.debug === 0;
   }
 
   /** Terrain surface radius (km, displaced) under a world direction, used for camera collision. */
@@ -445,10 +457,12 @@ export class PlanetView {
     const R = this.shared.uPlanetRadius.value;
     const hM = sampler(dir.x, dir.y, dir.z);
     const U = this.terrainMat.uniforms;
-    const ex = (hM < 0 ? hM * U.uSeaFloorScale.value : hM) * U.uHeightScale.value;
+    const h = U.uSeaIce.value > 0.5 ? Math.max(hM, 0) : hM;
+    const ex = (h < 0 ? h * U.uSeaFloorScale.value : h) * U.uHeightScale.value;
     // Margin for the procedural detail relief that the CPU heightmap does not contain.
     const detail = U.uDetailAmp.value * 1.6 * U.uHeightScale.value;
-    const sea = this.ocean.visible ? R : -Infinity;
+    // The sea is a floor whether or not the shell is drawn (debug views hide it): the camera must not retilt.
+    const sea = this.seaSolid ? R : -Infinity;
     return Math.max(sea, R + ex + detail);
   }
 }

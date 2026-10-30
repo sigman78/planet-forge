@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { dirToFace } from '../core/cube.ts';
+import { dirToFace, faceST, faceToDir } from '../core/cube.ts';
 import { COMMON, splitShader, type PlanetView } from './planetView.ts';
 import terrainCommon from '../shaders/terrain_common.glsl?raw';
 import terrainLight from '../shaders/terrain_light.glsl?raw';
@@ -10,6 +10,8 @@ import rocksGlsl from '../shaders/rocks.glsl?raw';
 import shadowGlsl from '../shaders/rock_shadow.glsl?raw';
 
 const GRID = 96;
+/** Windows per level: one per cube face the rock area touches (three meet at a corner). */
+const MAX_WINDOWS = 3;
 
 /**
  * One level of surface rocks: a GRID x GRID window of world cells that follows the camera.
@@ -39,7 +41,7 @@ const ROCK_DENSITY = [0.08, 0.3, 0.45, 0, 1, 0.7, 0.25, 0.05];
 /** Real-scale tiling of the layer textures on the rocks (tiles per metre). */
 const ROCK_TILE = 0.35;
 
-function instanced(base: THREE.BufferGeometry): THREE.InstancedBufferGeometry {
+function instanced(base: THREE.BufferGeometry | THREE.InstancedBufferGeometry): THREE.InstancedBufferGeometry {
   const g = new THREE.InstancedBufferGeometry();
   g.index = base.index;
   g.setAttribute('position', base.getAttribute('position'));
@@ -62,9 +64,15 @@ class Level {
   readonly mesh: THREE.Mesh;
   readonly shadow: THREE.Mesh;
   private cellS = 0;
+  // Per-level views of the shared buffers: each level draws as many windows as it uses.
+  private geo: THREE.InstancedBufferGeometry;
+  private quadGeo: THREE.InstancedBufferGeometry;
 
   constructor(readonly cfg: RockLevel, readonly index: number, view: PlanetView, geo: THREE.InstancedBufferGeometry, quad: THREE.InstancedBufferGeometry) {
-    this.rt = new THREE.WebGLRenderTarget(GRID * 3, GRID, {
+    this.geo = geo = instanced(geo);
+    this.quadGeo = quad = instanced(quad);
+    // Windows stacked vertically: window w holds rows [w * GRID, (w + 1) * GRID).
+    this.rt = new THREE.WebGLRenderTarget(GRID * 3, GRID * MAX_WINDOWS, {
       type: THREE.FloatType,
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
@@ -75,7 +83,9 @@ class Level {
     this.place = new THREE.ShaderMaterial({
       uniforms: {
         ...T,
-        uAnchor: { value: new THREE.Vector3() },
+        uAnchor: { value: Array.from({ length: MAX_WINDOWS }, () => new THREE.Vector3()) },
+        uCenter: { value: Array.from({ length: MAX_WINDOWS }, () => new THREE.Vector2()) },
+        uWindows: { value: 1 },
         uCellS: { value: 1 },
         uRMin: { value: cfg.rMin },
         uRMax: { value: cfg.rMax },
@@ -123,7 +133,12 @@ class Level {
     this.shadow.renderOrder = 0.5;
   }
 
-  /** Window centre on the ground ahead of the camera, snapped to world cells. */
+  /**
+   * Window centre on the ground ahead of the camera, snapped to world cells. Cells belong to the face they lie on
+   * and are hashed in that face's grid, so when the rock area reaches over a cube edge the neighbour face gets a
+   * window of its own instead of the anchor face's grid running on (which reshuffled every rock as the centre
+   * crossed the edge).
+   */
   update(renderer: THREE.WebGLRenderer, view: PlanetView, camera: THREE.PerspectiveCamera, groundAlt: number, density: number) {
     const on = density > 0 && groundAlt < this.cfg.maxAlt && view.data !== null;
     this.mesh.visible = this.shadow.visible = on;
@@ -140,11 +155,26 @@ class Level {
     const ahead = windowKm * 0.3;
     const c = camera.position.clone().addScaledVector(fwd, ahead).normalize();
     const fc = dirToFace(c.x, c.y, c.z);
+    const half = (GRID / 2) * this.cellS * 1.05;
+    const faces = [fc.face];
+    for (let a = -1; a <= 1; a++) {
+      for (let b = -1; b <= 1; b++) {
+        const d = faceToDir(fc.face, fc.s + a * half, fc.t + b * half);
+        const f = dirToFace(d[0], d[1], d[2]).face;
+        if (!faces.includes(f) && faces.length < MAX_WINDOWS) faces.push(f);
+      }
+    }
     const U = this.place.uniforms;
-    U.uAnchor.value.set(fc.face, Math.floor((fc.s + 1) / this.cellS), Math.floor((fc.t + 1) / this.cellS));
+    faces.forEach((f, k) => {
+      const st = k === 0 ? fc : faceST(f, c.x, c.y, c.z);
+      U.uAnchor.value[k].set(f, Math.floor((st.s + 1) / this.cellS), Math.floor((st.t + 1) / this.cellS));
+      U.uCenter.value[k].set(st.s, st.t);
+    });
+    U.uWindows.value = faces.length;
+    this.geo.instanceCount = this.quadGeo.instanceCount = GRID * GRID * faces.length;
     U.uCellS.value = this.cellS;
     U.uSegments.value = view.segments;
-    U.uOcean.value = view.ocean.visible ? 1 : 0;
+    U.uOcean.value = view.seaSolid ? 1 : 0;
     U.uDensity.value = this.cfg.density * density;
     U.uCamPos.value.copy(camera.position);
     const prev = renderer.getRenderTarget();
@@ -159,6 +189,8 @@ class Level {
     this.quad.dispose();
     (this.mesh.material as THREE.Material).dispose();
     (this.shadow.material as THREE.Material).dispose();
+    this.geo.dispose();
+    this.quadGeo.dispose();
   }
 }
 

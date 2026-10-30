@@ -5,6 +5,7 @@ uniform float uN;
 uniform float uRadius;        // km
 uniform float uHeightScale;   // km per metre of elevation, includes exaggeration
 uniform float uSeaFloorScale; // extra multiplier for below-sea elevations
+uniform float uSeaIce;        // 1 = frozen sea: the ground is clamped flat at the datum (no separate shell)
 uniform float uDetailAmp;     // metres
 uniform float uDetailScale;   // km of the largest detail feature
 uniform float uPixelAngle;    // radians covered by one screen pixel (vertical fov / viewport height)
@@ -113,6 +114,8 @@ float terrainHeightM(vec3 d) {
 }
 
 float elevationKm(float hM) {
+  // Frozen seas are part of the terrain: one surface for the mesh, rocks, shadows and the camera.
+  if (uSeaIce > 0.5) hM = max(hM, 0.0);
   return (hM < 0.0 ? hM * uSeaFloorScale : hM) * uHeightScale;
 }
 

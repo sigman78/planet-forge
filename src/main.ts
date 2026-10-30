@@ -54,9 +54,11 @@ async function main() {
     meshSegments: 0, // 0 = auto (by on-screen size)
     hideUi: false,
     /** HQ volumetrics: terrain shadows in the dust and haze (sun shadow-height map), more haze steps. */
-    hq: true,
+    hq: false,
     /** HQ only: how far the terrain's shadow volumes reach up into the dust (1 = physical). */
     shafts: 3,
+    /** Mood grade low in the air: shadows take the air's colour, highlights the sun's (0 = off). */
+    mood: 2,
     /** Surface rock density (0 = off). */
     rocks: 1,
     /** Console aid: 1 = shadow map verdict on the ground, 2 = haze glow only. */
@@ -529,6 +531,7 @@ async function main() {
   fAtmo.addBinding(env, 'atmoSteps', { label: 'march steps', min: 4, max: 64, step: 1 });
   fAtmo.addBinding(state, 'hq', { label: 'HQ volumetrics' });
   fAtmo.addBinding(state, 'shafts', { label: 'dust shafts', min: 1, max: 8, step: 0.1 });
+  fAtmo.addBinding(state, 'mood', { label: 'mood grade', min: 0, max: 3, step: 0.05 });
 
   // Light tab
   tLight.addBinding(env, 'sunAzimuth', { label: 'sun azimuth', min: -180, max: 180, step: 0.5 });
@@ -636,6 +639,8 @@ async function main() {
     const hq = state.hq && view.group.visible && shared.uHaze.value + shared.uMie.value * shared.uAtmoDensity.value > 0;
     pipeline.atmoUniforms.uHQ.value = hq ? 1 + state.hqDebug : 0;
     pipeline.atmoUniforms.uShafts.value = state.shafts;
+    pipeline.atmoUniforms.uMood.value = view.group.visible ? state.mood : 0;
+    pipeline.atmoUniforms.uExposure.value = renderer.toneMappingExposure;
     if (hq) sunShadow.update(renderer, shared.uSunDir.value);
     pipeline.render(dt);
     fps.end();
