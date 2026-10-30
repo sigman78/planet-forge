@@ -5,7 +5,13 @@ import * as THREE from 'three';
  * - Left drag: orbit (speed scales with altitude, so it feels the same from orbit and near the ground).
  * - Wheel / pinch: exponential zoom in altitude.
  * - Right drag (or shift+left): heading / pitch.
+ * - Keys: W/S fly toward / away from the point under the cursor, A/D strafe, E/Q up / down, arrows turn,
+ *   shift = faster. Speed scales with the height above the ground.
  * - Pitch automatically eases toward the horizon as you get close to the surface.
+ *
+ * Where the camera stands and which way it faces is one quaternion (`frame`: x = right, y = local up,
+ * -z = forward along the ground). Drags rotate that frame, so there is no pole and no gimbal lock; lat, lon and
+ * heading are read back from it for the HUD, the tour and `flyTo`.
  */
 export interface ViewState {
   lat: number;
@@ -16,45 +22,106 @@ export interface ViewState {
 }
 
 interface Flight {
-  from: ViewState;
-  to: ViewState;
+  q0: THREE.Quaternion;
+  /** Shortest rotation taking the start position to the end position. */
+  move: THREE.Quaternion;
+  /** Heading change still needed at the end, after carrying the start heading along the path. */
+  twist: number;
+  alt0: number;
+  alt1: number;
+  pitch0: number;
+  pitch1: number;
   t: number;
   duration: number;
   onDone?: () => void;
 }
 
-const wrapPi = (a: number) => a - 2 * Math.PI * Math.round(a / (2 * Math.PI));
+const Y = new THREE.Vector3(0, 1, 0);
+const _v = new THREE.Vector3();
+const _w = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const _m = new THREE.Matrix4();
+
+/** Unit position (local up) of a frame. */
+const upOf = (q: THREE.Quaternion, out = new THREE.Vector3()) => out.set(0, 1, 0).applyQuaternion(q);
+/** Forward tangent of a frame. */
+const fwdOf = (q: THREE.Quaternion, out = new THREE.Vector3()) => out.set(0, 0, -1).applyQuaternion(q);
+/** Right tangent of a frame. */
+const rightOf = (q: THREE.Quaternion, out = new THREE.Vector3()) => out.set(1, 0, 0).applyQuaternion(q);
+
+/** East and north at a unit position (any pair at the exact poles). */
+function eastNorth(n: THREE.Vector3, east: THREE.Vector3, north: THREE.Vector3) {
+  east.crossVectors(Y, n);
+  if (east.lengthSq() < 1e-12) east.set(1, 0, 0);
+  east.normalize();
+  north.crossVectors(n, east).normalize();
+}
+
+/** Frame standing at lat/lon facing `heading` (clockwise from north). */
+function frameFrom(lat: number, lon: number, heading: number, out = new THREE.Quaternion()) {
+  const n = new THREE.Vector3(Math.cos(lat) * Math.sin(lon), Math.sin(lat), Math.cos(lat) * Math.cos(lon));
+  const east = new THREE.Vector3(), north = new THREE.Vector3();
+  eastNorth(n, east, north);
+  const f = north.multiplyScalar(Math.cos(heading)).addScaledVector(east, Math.sin(heading));
+  const right = new THREE.Vector3().crossVectors(f, n);
+  return out.setFromRotationMatrix(_m.makeBasis(right, n, f.negate()));
+}
+
+/** Lat, lon and heading read from a frame. */
+function anglesOf(q: THREE.Quaternion) {
+  const n = upOf(q), f = fwdOf(q);
+  const east = new THREE.Vector3(), north = new THREE.Vector3();
+  eastNorth(n, east, north);
+  return {
+    lat: Math.asin(THREE.MathUtils.clamp(n.y, -1, 1)),
+    lon: Math.atan2(n.x, n.z),
+    heading: Math.atan2(f.dot(east), f.dot(north)),
+  };
+}
+
+/** Rotate a frame in place by a world rotation, renormalised so rounding never builds up. */
+function turn(q: THREE.Quaternion, r: THREE.Quaternion) {
+  return q.premultiply(r).normalize();
+}
+
+const FLY_KEYS = new Set([
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
 
 export class PlanetCameraController {
-  lat = 0.35;
-  lon = 0.6;
   altitude = 2400; // km above sea level
-  heading = 0;
   userPitch = 0; // added to the automatic pitch, radians
   minAltitude = 0.4; // km above the terrain
   maxAltitude = 12000;
   autoTilt = true;
   autoRotate = 0; // rad/s around the planet axis
   radius = 800;
+  /** Fly speed in heights-above-ground per second. */
+  flySpeed = 1.2;
   /** Returns terrain surface radius (km) under a unit direction. */
   surface: (dir: THREE.Vector3) => number = () => this.radius;
 
-  private target = { lat: 0.35, lon: 0.6, altitude: 2400, heading: 0, userPitch: 0 };
-  /** Orbit inertia (rad/s in lat/lon), carried after the drag is released. */
-  private vel = { lat: 0, lon: 0 };
-  /** Recent drag steps, used to measure the release velocity. */
-  private samples: { t: number; lat: number; lon: number }[] = [];
+  /** Current frame (eases toward `target.frame`). */
+  private frame = frameFrom(0.35, 0.6, 0);
+  private target = { frame: frameFrom(0.35, 0.6, 0), altitude: 2400, userPitch: 0 };
+  /** Orbit inertia: world rotation axis scaled by rad/s, carried after the drag is released. */
+  private spin = new THREE.Vector3();
+  /** Recent drag steps (rotation vectors), used to measure the release velocity. */
+  private samples: { t: number; rot: THREE.Vector3 }[] = [];
   /** Pitch and height above the ground from the last update (they scale drags). */
   private pitch = Math.PI / 2;
   private groundAlt = 2400;
   private groundR = 800;
   private flight: Flight | null = null;
-  /** Called when the user takes over (pointer or wheel input). */
+  /** Called when the user takes over (pointer, wheel or fly keys). */
   onUserInput: (() => void) | null = null;
   private dragging: 'orbit' | 'look' | null = null;
   private last = new THREE.Vector2();
   private pointers = new Map<number, THREE.Vector2>();
   private pinchDist = 0;
+  /** Cursor in normalised device coordinates (the screen centre when it is off the canvas). */
+  private cursor = new THREE.Vector2();
+  private keys = new Set<string>();
 
   constructor(
     private camera: THREE.PerspectiveCamera,
@@ -64,15 +131,45 @@ export class PlanetCameraController {
     dom.addEventListener('pointermove', this.onMove);
     dom.addEventListener('pointerup', this.onUp);
     dom.addEventListener('pointercancel', this.onUp);
+    dom.addEventListener('pointerleave', () => !this.dragging && this.cursor.set(0, 0));
     dom.addEventListener('wheel', this.onWheel, { passive: false });
     dom.addEventListener('contextmenu', (e) => e.preventDefault());
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', (e) => {
+      this.keys.delete(e.code);
+      this.shiftHeld = e.shiftKey;
+    });
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.shiftHeld = false;
+    });
     dom.style.touchAction = 'none';
+  }
+
+  get lat() {
+    return anglesOf(this.frame).lat;
+  }
+  get lon() {
+    return anglesOf(this.frame).lon;
+  }
+  get heading() {
+    return anglesOf(this.frame).heading;
   }
 
   setView(v: Partial<ViewState>, instant = false) {
     this.flight = null;
-    Object.assign(this.target, v);
-    if (instant) Object.assign(this, this.target);
+    this.spin.set(0, 0, 0);
+    if (v.lat !== undefined || v.lon !== undefined || v.heading !== undefined) {
+      const a = anglesOf(this.target.frame);
+      frameFrom(v.lat ?? a.lat, v.lon ?? a.lon, v.heading ?? a.heading, this.target.frame);
+    }
+    if (v.altitude !== undefined) this.target.altitude = v.altitude;
+    if (v.userPitch !== undefined) this.target.userPitch = v.userPitch;
+    if (instant) {
+      this.frame.copy(this.target.frame);
+      this.altitude = this.target.altitude;
+      this.userPitch = this.target.userPitch;
+    }
   }
 
   /** Camera height above the terrain under it (km), from the last update. */
@@ -80,8 +177,8 @@ export class PlanetCameraController {
     return this.groundAlt;
   }
 
-  get state() {
-    return { ...this.target };
+  get state(): ViewState {
+    return { ...anglesOf(this.target.frame), altitude: this.target.altitude, userPitch: this.target.userPitch };
   }
 
   get flying() {
@@ -89,17 +186,35 @@ export class PlanetCameraController {
   }
 
   /**
-   * Fly to a view over `duration` seconds (ease in-out). Altitude moves in log space, angles take the short way
-   * round. Pointer or wheel input cancels the flight.
+   * Fly to a view over `duration` seconds (ease in-out). The position follows the great circle, the heading is
+   * carried along it and turns smoothly into the requested one, and altitude moves in log space. Any user input
+   * cancels the flight.
    */
   flyTo(v: Partial<ViewState>, duration: number, onDone?: () => void) {
-    const from: ViewState = { lat: this.lat, lon: this.lon, altitude: this.altitude, heading: this.heading, userPitch: this.userPitch };
-    const to: ViewState = { ...from, ...v };
-    to.lon = from.lon + wrapPi(to.lon - from.lon);
-    to.heading = from.heading + wrapPi(to.heading - from.heading);
-    to.altitude = THREE.MathUtils.clamp(to.altitude, this.minAltitude, this.maxAltitude);
-    this.vel.lat = this.vel.lon = 0;
-    this.flight = { from, to, t: 0, duration: Math.max(duration, 1e-3), onDone };
+    const q0 = this.frame.clone();
+    const a = anglesOf(q0);
+    const q1 =
+      v.lat !== undefined || v.lon !== undefined || v.heading !== undefined
+        ? frameFrom(v.lat ?? a.lat, v.lon ?? a.lon, v.heading ?? a.heading)
+        : q0.clone();
+    const n0 = upOf(q0), n1 = upOf(q1);
+    const move = new THREE.Quaternion().setFromUnitVectors(n0, n1);
+    const fCarried = fwdOf(q0).applyQuaternion(move);
+    const f1 = fwdOf(q1);
+    const twist = Math.atan2(_v.crossVectors(fCarried, f1).dot(n1), fCarried.dot(f1));
+    this.spin.set(0, 0, 0);
+    this.flight = {
+      q0,
+      move,
+      twist,
+      alt0: this.altitude,
+      alt1: THREE.MathUtils.clamp(v.altitude ?? this.altitude, this.minAltitude, this.maxAltitude),
+      pitch0: this.userPitch,
+      pitch1: v.userPitch ?? this.userPitch,
+      t: 0,
+      duration: Math.max(duration, 1e-3),
+      onDone,
+    };
   }
 
   cancelFlight() {
@@ -119,9 +234,16 @@ export class PlanetCameraController {
   private takeOver() {
     if (this.flight) {
       this.flight = null;
-      Object.assign(this.target, { lat: this.lat, lon: this.lon, altitude: this.altitude, heading: this.heading, userPitch: this.userPitch });
+      this.target.frame.copy(this.frame);
+      this.target.altitude = this.altitude;
+      this.target.userPitch = this.userPitch;
     }
     this.onUserInput?.();
+  }
+
+  private trackCursor(e: PointerEvent) {
+    const r = this.dom.getBoundingClientRect();
+    this.cursor.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   }
 
   private onDown = (e: PointerEvent) => {
@@ -133,13 +255,15 @@ export class PlanetCameraController {
     }
     this.dragging = e.button === 2 || e.shiftKey ? 'look' : 'orbit';
     this.last.set(e.clientX, e.clientY);
+    this.trackCursor(e);
     // Grabbing the planet stops it.
-    this.vel.lat = this.vel.lon = 0;
+    this.spin.set(0, 0, 0);
     this.samples.length = 0;
     this.takeOver();
   };
 
   private onMove = (e: PointerEvent) => {
+    this.trackCursor(e);
     if (!this.dragging) return;
     const p = this.pointers.get(e.pointerId);
     if (p) p.set(e.clientX, e.clientY);
@@ -154,6 +278,7 @@ export class PlanetCameraController {
     const dy = e.clientY - this.last.y;
     this.last.set(e.clientX, e.clientY);
     const h = this.dom.clientHeight || 1;
+    const q = this.target.frame;
     if (this.dragging === 'orbit') {
       // Angular speed so that the ground at the screen centre follows the mouse. When the view tilts toward the
       // horizon that ground is much farther away than the altitude: alt / sin(pitch), at most the horizon.
@@ -162,20 +287,19 @@ export class PlanetCameraController {
       const horizon = Math.sqrt(Math.max((this.groundR + alt) ** 2 - this.groundR ** 2, alt * alt));
       const D = THREE.MathUtils.clamp(alt / Math.max(Math.sin(this.pitch), 0.15), alt, horizon);
       const k = Math.min((D / this.radius) * fovRad, 2.2) / h;
-      const ch = Math.cos(this.target.heading);
-      const sh = Math.sin(this.target.heading);
-      // Rotate screen motion by heading.
-      const north = dy * ch + dx * sh;
-      const east = -dx * ch + dy * sh;
-      const lat0 = this.target.lat;
-      this.target.lat = THREE.MathUtils.clamp(this.target.lat + north * k, -1.55, 1.55);
-      const dLon = (east * k) / Math.max(Math.cos(this.target.lat), 0.05);
-      this.target.lon += dLon;
+      // Dragging down moves the camera forward, dragging right moves it left (the ground follows the hand).
+      const move = fwdOf(q, _v).multiplyScalar(dy).addScaledVector(rightOf(q, _w), -dx);
+      const len = move.length();
+      if (len < 1e-9) return;
+      const axis = upOf(q, _w).cross(move).divideScalar(len);
+      const angle = len * k;
+      turn(q, _q.setFromAxisAngle(axis, angle));
       const now = performance.now();
-      this.samples.push({ t: now, lat: this.target.lat - lat0, lon: dLon });
+      this.samples.push({ t: now, rot: axis.clone().multiplyScalar(angle) });
       while (this.samples.length && now - this.samples[0].t > 100) this.samples.shift();
     } else {
-      this.target.heading += (dx / h) * 2.5;
+      // Heading turns about the local up: clockwise (toward the right) for a drag to the right.
+      turn(q, _q.setFromAxisAngle(upOf(q, _w), -(dx / h) * 2.5));
       this.target.userPitch = THREE.MathUtils.clamp(this.target.userPitch + (dy / h) * 2.0, -1.2, 1.2);
     }
   };
@@ -188,13 +312,9 @@ export class PlanetCameraController {
       const recent = this.samples.filter((p) => now - p.t < 100);
       if (this.dragging === 'orbit' && recent.length >= 2 && now - recent[recent.length - 1].t < 50) {
         const span = Math.max((now - recent[0].t) / 1000, 1 / 60);
-        let dLat = 0, dLon = 0;
-        for (const p of recent) {
-          dLat += p.lat;
-          dLon += p.lon;
-        }
-        this.vel.lat = dLat / span;
-        this.vel.lon = dLon / span;
+        this.spin.set(0, 0, 0);
+        for (const p of recent) this.spin.add(p.rot);
+        this.spin.divideScalar(span);
       }
       this.samples.length = 0;
       this.dragging = null;
@@ -209,11 +329,48 @@ export class PlanetCameraController {
     this.zoomBy(Math.exp(delta * 0.0012));
   };
 
+  private onKeyDown = (e: KeyboardEvent) => {
+    const tag = (e.target as HTMLElement).tagName;
+    this.shiftHeld = e.shiftKey;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!FLY_KEYS.has(e.code)) return;
+    e.preventDefault();
+    if (!this.keys.has(e.code)) {
+      this.keys.add(e.code);
+      this.spin.set(0, 0, 0);
+      this.takeOver();
+    }
+  };
+
   zoomBy(f: number) {
     this.target.altitude = THREE.MathUtils.clamp(this.target.altitude * f, this.minAltitude, this.maxAltitude);
   }
 
-  private dir = new THREE.Vector3();
+  /** Apply held fly keys to the target view. */
+  private fly(dt: number, shift: boolean) {
+    const k = this.keys;
+    const axis = (a: string, b: string) => (k.has(a) ? 1 : 0) - (k.has(b) ? 1 : 0);
+    const fwd = axis('KeyW', 'KeyS') + axis('ArrowUp', 'ArrowDown');
+    const side = axis('KeyD', 'KeyA');
+    const lift = axis('KeyE', 'KeyQ');
+    const yaw = axis('ArrowRight', 'ArrowLeft');
+    const q = this.target.frame;
+    if (yaw) turn(q, _q.setFromAxisAngle(upOf(q, _w), -yaw * 1.2 * dt));
+    if (!fwd && !side && !lift) return;
+    // W/S move along the ray under the cursor, so the point being flown at stays under it and grows.
+    const ray = _v.set(this.cursor.x, this.cursor.y, 0.5).unproject(this.camera).sub(this.camera.position).normalize();
+    const n = upOf(q, new THREE.Vector3());
+    const move = ray.multiplyScalar(fwd).addScaledVector(rightOf(q, _w), side).addScaledVector(n, lift);
+    if (move.lengthSq() < 1e-12) return;
+    move.normalize();
+    // Height above the ground sets the pace: it slows on the way down and the ground clamp stops the fall.
+    const speed = this.flySpeed * Math.min(Math.max(this.groundAlt, this.minAltitude), this.radius) * (shift ? 4 : 1);
+    const r = this.radius + this.target.altitude;
+    const p = n.clone().multiplyScalar(r).addScaledVector(move, speed * dt);
+    const r1 = p.length();
+    turn(q, _q.setFromUnitVectors(n, p.divideScalar(r1)));
+    this.target.altitude = THREE.MathUtils.clamp(r1 - this.radius, -this.radius * 0.5, this.maxAltitude);
+  }
 
   /** Automatic pitch (radians below the local horizontal): the planet centre when far, the horizon when low. */
   private autoPitch(r: number, ground: number) {
@@ -229,47 +386,47 @@ export class PlanetCameraController {
   }
 
   update(dt: number) {
+    const T = this.target;
     if (this.flight) {
       // Scripted flight drives the view directly; the target follows, so nothing eases afterwards.
       const f = this.flight;
       f.t = Math.min(f.t + dt / f.duration, 1);
       const e = f.t * f.t * (3 - 2 * f.t);
       const L = THREE.MathUtils.lerp;
-      this.lat = L(f.from.lat, f.to.lat, e);
-      this.lon = L(f.from.lon, f.to.lon, e);
-      this.altitude = Math.exp(L(Math.log(Math.max(f.from.altitude, 1e-3)), Math.log(Math.max(f.to.altitude, 1e-3)), e));
-      this.heading = L(f.from.heading, f.to.heading, e);
-      this.userPitch = L(f.from.userPitch, f.to.userPitch, e);
-      Object.assign(this.target, { lat: this.lat, lon: this.lon, altitude: this.altitude, heading: this.heading, userPitch: this.userPitch });
+      const step = new THREE.Quaternion().slerp(f.move, e);
+      this.frame.copy(f.q0).premultiply(step);
+      turn(this.frame, _q.setFromAxisAngle(upOf(this.frame, _w), f.twist * e));
+      this.altitude = Math.exp(L(Math.log(Math.max(f.alt0, 1e-3)), Math.log(Math.max(f.alt1, 1e-3)), e));
+      this.userPitch = L(f.pitch0, f.pitch1, e);
+      T.frame.copy(this.frame);
+      T.altitude = this.altitude;
+      T.userPitch = this.userPitch;
       if (f.t >= 1) {
         this.flight = null;
         f.onDone?.();
       }
     } else {
-      this.target.lon += this.autoRotate * dt;
+      if (this.autoRotate) turn(T.frame, _q.setFromAxisAngle(Y, this.autoRotate * dt));
+      if (this.keys.size) this.fly(dt, this.shiftHeld);
       // Inertia: keep drifting after a throw, decaying over about 0.7 s.
-      if (!this.dragging && (this.vel.lat !== 0 || this.vel.lon !== 0)) {
-        this.target.lat = THREE.MathUtils.clamp(this.target.lat + this.vel.lat * dt, -1.55, 1.55);
-        this.target.lon += this.vel.lon * dt;
-        const d = Math.exp(-dt / 0.7);
-        this.vel.lat *= d;
-        this.vel.lon *= d;
-        if (Math.abs(this.vel.lat) + Math.abs(this.vel.lon) < 1e-5) this.vel.lat = this.vel.lon = 0;
+      const w = this.spin.length();
+      if (!this.dragging && w > 0) {
+        turn(T.frame, _q.setFromAxisAngle(_v.copy(this.spin).divideScalar(w), w * dt));
+        this.spin.multiplyScalar(Math.exp(-dt / 0.7));
+        if (w < 1e-5) this.spin.set(0, 0, 0);
       }
     }
     const a = 1 - Math.exp(-dt * 8);
-    this.lat += (this.target.lat - this.lat) * a;
-    this.lon += (this.target.lon - this.lon) * a;
-    // Altitude eases in log space for a smooth exponential zoom.
-    this.altitude = Math.exp(Math.log(this.altitude) + (Math.log(this.target.altitude) - Math.log(this.altitude)) * a);
-    this.heading += (this.target.heading - this.heading) * a;
-    this.userPitch += (this.target.userPitch - this.userPitch) * a;
+    this.frame.slerp(T.frame, a).normalize();
+    // Altitude eases in log space for a smooth exponential zoom. Below the datum (deep basins) it eases linearly.
+    if (this.altitude > 0 && T.altitude > 0) {
+      this.altitude = Math.exp(Math.log(this.altitude) + (Math.log(T.altitude) - Math.log(this.altitude)) * a);
+    } else {
+      this.altitude += (T.altitude - this.altitude) * a;
+    }
+    this.userPitch += (T.userPitch - this.userPitch) * a;
 
-    const n = this.dir.set(
-      Math.cos(this.lat) * Math.sin(this.lon),
-      Math.sin(this.lat),
-      Math.cos(this.lat) * Math.cos(this.lon),
-    );
+    const n = upOf(this.frame, this.dir);
     // Keep above the terrain.
     const ground = this.surface(n);
     const minR = ground + this.minAltitude;
@@ -277,18 +434,8 @@ export class PlanetCameraController {
     if (r < minR) {
       r = minR;
       this.altitude = r - this.radius;
-      this.target.altitude = Math.max(this.target.altitude, this.altitude);
+      T.altitude = Math.max(T.altitude, this.altitude);
     }
-    const pos = n.clone().multiplyScalar(r);
-
-    // Local frame: north tangent & east.
-    const worldUp = new THREE.Vector3(0, 1, 0);
-    let east = new THREE.Vector3().crossVectors(worldUp, n);
-    if (east.lengthSq() < 1e-8) east.set(1, 0, 0);
-    east.normalize();
-    const north = new THREE.Vector3().crossVectors(n, east).normalize();
-    // Forward tangent rotated by heading.
-    const fwd = north.clone().multiplyScalar(Math.cos(this.heading)).addScaledVector(east, Math.sin(this.heading));
 
     const altAboveGround = r - ground;
     let pitch = this.autoPitch(r, ground) - this.userPitch;
@@ -297,13 +444,9 @@ export class PlanetCameraController {
     this.groundAlt = altAboveGround;
     this.groundR = ground;
 
-    const view = fwd.clone().multiplyScalar(Math.cos(pitch)).addScaledVector(n, -Math.sin(pitch)).normalize();
-    const up = fwd.clone().multiplyScalar(Math.sin(pitch)).addScaledVector(n, Math.cos(pitch)).normalize();
-    const z = view.clone().negate();
-    const x = new THREE.Vector3().crossVectors(up, z).normalize();
-    const y = new THREE.Vector3().crossVectors(z, x);
-    this.camera.position.copy(pos);
-    this.camera.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+    // Camera = frame tilted down by the pitch about its right axis.
+    this.camera.position.copy(n).multiplyScalar(r);
+    this.camera.quaternion.copy(this.frame).multiply(_q.setFromAxisAngle(_v.set(1, 0, 0), -pitch));
 
     // Depth range adapted to altitude.
     const near = THREE.MathUtils.clamp(altAboveGround * 0.25, 0.02, 200);
@@ -315,4 +458,7 @@ export class PlanetCameraController {
     }
     this.camera.updateMatrixWorld();
   }
+
+  private dir = new THREE.Vector3();
+  private shiftHeld = false;
 }
