@@ -17,6 +17,9 @@ uniform sampler2DArray tGrad;        // baked height gradient (m per km, world s
 uniform float uShadows;              // cast-shadow strength (0 = off)
 uniform float uTerrainAO;            // heightmap AO strength
 uniform vec3  uLayerTint[LAYERS];
+uniform vec3  uLayerMean[LAYERS];    // mean linear albedo of each texture (settled dust colour)
+uniform float uLayerNormal[LAYERS];  // per-layer texture normal strength (crack textures are toned down)
+uniform float uWeathering;           // dust settling, scree, regional jitter (0 = off)
 uniform float uNormalStrength;
 uniform float uMacroNormal;          // strength of the heightmap-derived normal
 uniform float uHeightBlend;          // contrast of height-based blending
@@ -179,13 +182,31 @@ vec3 triNormal(Hex h, vec2 uv, vec2 gx, vec2 gy, float sc, float L, vec2 W) {
 uniform float uFarWindow;       // height-blend window far away (wider = softer unit edges)
 float gDetailFootprint = 0.0;   // geometric mean of the screen footprint axes (see main)
 
+// Low-frequency context for the fine relief, set in main before detailGrad.
+float gRegion = 0.0;    // ~30 km region noise (-1..1): crack fields, plate size, roughness jitter
+float gFineAmp = 1.0;   // regional and slope amplitude of the fine octaves
+
+// Fine-octave style per octave (k = 3..7). Cracked plates live only at the two coarsest fine scales and craterlets
+// thin out toward the finest: one style repeated at every scale is what made the ground look like reptile skin.
+// Half the weight they give up turns into billowy relief (the surface keeps some roughness), the rest is dropped:
+// fine relief everywhere at full strength reads as crumpled paper.
+vec4 octaveStyle(vec4 st, float crackM, float pitM) {
+  float dz = st.z * (1.0 - crackM), dw = st.w * (1.0 - pitM);
+  return vec4(st.x + 0.25 * dw, st.y + 0.5 * dz + 0.25 * dw, st.z - dz, st.w - dw);
+}
+
 vec3 detailGrad(vec3 d, float h, vec4 fineStyle) {
   if (uDetailAmp <= 0.0) return vec3(0.0);
   vec3 G = vec3(0.0);
   float s = uDetailScale;
   float landM = landMask(h);
-  float fineM = (h < 0.0 ? 0.3 : mix(0.5, 1.4, smoothstep(300.0, 5000.0, h))) * uFineDetail;
+  float fineM = (h < 0.0 ? 0.3 : mix(0.5, 1.4, smoothstep(300.0, 5000.0, h))) * uFineDetail * gFineAmp;
   float a = 0.4;
+  // Plate size drifts between regions: some fields break into big plates, others into smaller ones.
+  float rr = 0.5 + 0.5 * gRegion;
+  float crackM[5] = float[5](mix(1.0, 0.4, rr), mix(0.6, 1.0, rr), 0.15, 0.0, 0.0);
+  const float PIT_M[5] = float[5](1.0, 1.0, 0.7, 0.3, 0.0);
+  // Three loops with constant bounds: landforms (world style), fine octaves with cells, fine octaves without.
   for (int k = 0; k < 8; k++) {
     // Mean-footprint fade (reach), plus a Nyquist fade on the long axis: at grazing angles one pixel spans
     // several wavelengths along the view, and point-sampled gradients would shimmer.
@@ -196,9 +217,16 @@ vec3 detailGrad(vec3 d, float h, vec4 fineStyle) {
       styleOct(d * (uRadius / s) + float(k) * 7.31, uLandStyle, g);
       G += (LAND_AMP[k] * landM * f / s) * g;
     } else {
-      styleOct(d * (uRadius / s) + float(k) * 17.3, fineStyle, g);
+      int j = k - 3;
+      vec4 st = octaveStyle(fineStyle, crackM[j], PIT_M[j]);
+      // Crack troughs are ~0.16 s wide: fade them well before they shrink to a couple of pixels.
+      float cf = 1.0 - smoothstep(0.035, 0.09, gDetailFootprint / s);
+      st.y += st.z * (1.0 - cf);
+      st.z *= cf;
+      if (k < 6) styleOct(d * (uRadius / s) + float(k) * 17.3, st, g);
+      else styleOctSmooth(d * (uRadius / s) + float(k) * 17.3, st, 0.05, g);
       G += (a * fineM * f / s) * g;
-      a *= 0.45;
+      a *= 0.38;
     }
     s /= DETAIL_STEP;
   }
@@ -266,7 +294,25 @@ void main() {
   vec4 fineStyle = vec4(0.0);
   for (int i = 0; i < LAYERS; i++) fineStyle += w[i] * uLayerStyle[i];
   fineStyle.w *= uFinePits;   // air and wind fill in small craters
+  // Slope (km/km) of the baked relief, and low-frequency region noise for variety.
+  float slope = length(Gh);
+  float flatK = 1.0 - smoothstep(0.08, 0.3, slope);
+  float steep = smoothstep(0.3, 0.6, slope);
+  float macro = fbm3(n * 9.0) + 0.5 * fbm3(n * 37.0) * octaveFade(uRadius / 37.0 * 0.25);
+  gRegion = snoise(n * (uRadius / 30.0) + 11.3);
+  float region2 = 0.7 * snoise(n * (uRadius / 12.0) + 5.1) + 0.3 * snoise(n * (uRadius / 4.0) + 2.7);
+  {
+    // Crack plates only on flats and only in some regions; on slopes their weight turns into ridged relief
+    // (fractured scarps), elsewhere into billowy.
+    float cz = fineStyle.z;
+    float field = 0.35 + 0.95 * smoothstep(-0.5, 0.6, gRegion + 0.3 * macro);
+    fineStyle.z = cz * field * flatK;
+    fineStyle.x += cz * (1.0 - flatK);
+    fineStyle.y += max(cz * flatK - fineStyle.z, 0.0);
+    fineStyle.x += 0.4 * steep;   // scree and gullies on steep flanks
+  }
   fineStyle /= max(fineStyle.x + fineStyle.y + fineStyle.z + fineStyle.w, 1e-4);
+  gFineAmp = (0.15 + 1.1 * smoothstep(-0.35, 0.45, region2)) * (1.0 + 0.4 * steep);   // smooth and rough patches
   {
     vec3 G = detailGrad(n, hM, fineStyle);
     G -= dot(G, Nm) * Nm;
@@ -356,15 +402,21 @@ void main() {
     float sc = uLayerScale[idx[k]];
     albedo += hb[k] * ah[k].rgb * uLayerTint[idx[k]];
     if (bw.x > 0.02) {
-      tnX += hb[k] * triNormal(hX, uvX, gXx, gXy, sc, L, hwX[k]);
+      vec3 tx = triNormal(hX, uvX, gXx, gXy, sc, L, hwX[k]);
+      tx.xy *= uLayerNormal[idx[k]];
+      tnX += hb[k] * tx;
       orm += hb[k] * bw.x * triOrm(hX, uvX, gXx, gXy, sc, L, hwX[k]);
     }
     if (bw.y > 0.02) {
-      tnY += hb[k] * triNormal(hY, uvY, gYx, gYy, sc, L, hwY[k]);
+      vec3 ty = triNormal(hY, uvY, gYx, gYy, sc, L, hwY[k]);
+      ty.xy *= uLayerNormal[idx[k]];
+      tnY += hb[k] * ty;
       orm += hb[k] * bw.y * triOrm(hY, uvY, gYx, gYy, sc, L, hwY[k]);
     }
     if (bw.z > 0.02) {
-      tnZ += hb[k] * triNormal(hZ, uvZ, gZx, gZy, sc, L, hwZ[k]);
+      vec3 tz = triNormal(hZ, uvZ, gZx, gZy, sc, L, hwZ[k]);
+      tz.xy *= uLayerNormal[idx[k]];
+      tnZ += hb[k] * tz;
       orm += hb[k] * bw.z * triOrm(hZ, uvZ, gZx, gZy, sc, L, hwZ[k]);
     }
   }
@@ -378,18 +430,33 @@ void main() {
   tnY = vec3(tnY.xy + Nm.xz, abs(tnY.z) * Nm.y);
   tnZ = vec3(tnZ.xy + Nm.xy, abs(tnZ.z) * Nm.z);
   vec3 N = normalize(tnX.zyx * bw.x + tnY.xzy * bw.y + tnZ.xyz * bw.z);
+  vec3 dNx = dFdx(N), dNy = dFdy(N);
+  float kernelA2 = min(0.5 * (dot(dNx, dNx) + dot(dNy, dNy)), 0.18);
 
   float ao = mix(1.0, orm.r, 0.8);
   float terrAO = mix(1.0, textureLod(tAO, tc, dataLod).r, uTerrainAO);
   // Dry rock and dust are very rough; ice (6) and salt (7) keep their texture roughness.
   float glossy = 0.0;
   for (int k = 0; k < NLAY; k++) if (idx[k] >= 6) glossy += hb[k];
-  float rough = clamp(mix(mix(uRoughMin, 1.0, orm.g), orm.g, glossy), 0.05, 1.0);
+  // Ice and salt keep some gloss, but never a mirror under a 6x sun; far away the unresolved relief roughens them more.
+  float rough = clamp(mix(mix(uRoughMin, 1.0, orm.g), max(orm.g, 0.32), glossy), 0.05, 1.0);
+  rough = min(rough + 0.3 * glossy * smoothstep(0.1, 0.6, gFootprint * uHexFreq), 1.0);
+  rough = clamp(rough + 0.08 * gRegion * uWeathering, 0.05, 1.0);
+  // Specular anti-aliasing (Tokuyoshi & Kaplanyan): normal variance across the pixel widens the lobe, so
+  // sub-pixel bumps stop flashing as sparkles. alpha^2 = rough^4 in brdf().
+  float a2 = rough * rough * rough * rough;
+  rough = pow(min(a2 + kernelA2, 1.0), 0.25);
   float metal = orm.b;
 
   // --- Macro variation ------------------------------------------------------------------------------
-  float macro = fbm3(n * 9.0) + 0.5 * fbm3(n * 37.0) * octaveFade(uRadius / 37.0 * 0.25);
   albedo *= 1.0 + uMacroVar * macro;
+  // Weathering: fine dust settles in hollows and on flats, slopes shed it (fresher, brighter scree);
+  // a slow regional drift in brightness, and in hue on ice.
+  float settle = smoothstep(0.85, 0.6, textureLod(tAO, tc, dataLod).r) * flatK * uWeathering;
+  albedo = mix(albedo, uLayerTint[0] * uLayerMean[0], 0.5 * settle);
+  rough = mix(rough, 1.0, settle * (1.0 - glossy));
+  albedo *= 1.0 + uWeathering * (0.12 * steep + 0.06 * gRegion);
+  albedo *= mix(vec3(1.0), vec3(1.0 - 0.03 * gRegion, 1.0, 1.0 + 0.04 * gRegion), glossy * uWeathering);
   float temp = climate.r, moist = climate.g, flow = climate.b;
 
   // --- Volatile wetness & erosion channels ------------------------------------------------------------

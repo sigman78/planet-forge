@@ -130,3 +130,34 @@ Newest entries at the bottom. Times are local.
     so the star rises past the limb.
   - Any input cancels it; auto-rotate and labels are restored afterwards.
 - README screenshots retaken side-lit (65° phase). Basalt is now shot from the lava-sea side.
+
+## 2026-10-30 — close-up quality (branch `exp/closeup`, plan in `docs/plan-closeup.md`)
+- **Dropped the eruption plumes.** The branch starts from `e9cb68c`, before the plume commits. They did not fit the planned look.
+- **Fable design review** of the low-flyby look. Its plan and reasoning are in `docs/plan-closeup.md`.
+  Parallax mapping was skipped: triplanar x 2 hex cells x 3 layers multiplies the march about 18x, and at 250x texture
+  scale it would fake tens of metres of swimming relief.
+- **Phase A (terrain shader):**
+  - **Crack skin removed.**
+    - Cracked plates now appear only at the two coarsest fine octaves. Craterlets thin out toward the finest octave.
+    - The two finest octaves use a crack-free function, which drops 2 Worley evaluations per pixel.
+    - Smooth (C1) crack profile, 0.6x crack slope, and a crack-specific footprint fade.
+    - No plates on slopes: their weight goes to ridged relief.
+    - ~30 km region noise switches crack fields on and off and shifts the plate size.
+    - Rounded creases and a steeper falloff on the finest billowy octaves (no more crumpled paper).
+  - **Ice and salt textures** tile 4x / 3.3x smaller with 0.35 / 0.45 normal strength, so the texture cracks read as
+    grain inside the plates instead of a second plate net at the same size.
+  - **Ice shimmer:**
+    - Specular AA from screen-space normal variance (Tokuyoshi/Kaplanyan).
+    - Glossy roughness floor of 0.32, plus extra roughness far away.
+  - **Variety** (`weathering` slider):
+    - Dust settles in hollows and on flats.
+    - Brighter, more ridged scree on slopes.
+    - Regional drift in roughness, brightness and ice hue.
+    - Regional smooth/rough patches in the fine relief (two noise scales).
+  - **Mesh:** up to 768 segments below 25 km on bodies >= 600 km (512 on smaller ones). `detailM` stops at the first
+    fully faded octave.
+  - **fps** (1080 Ti, 1400x850, 2/6/25 km and top-down, before -> after):
+    - ice shell 95/90/87/89 -> 101/96/90/91
+    - rust 104/89/85/104 -> 110/106/94/94
+    - grey moon 90/85/80/94 -> 97/90/81/107
+    - sulfur 92/83/82/79 -> 86/79/72/94 (R 725 km, the 768-segment mesh)

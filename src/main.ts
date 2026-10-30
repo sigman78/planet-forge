@@ -485,6 +485,7 @@ async function main() {
   fSurf.addBinding(look, 'roughMin', { label: 'min roughness', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'seaFloorScale', { label: 'seafloor scale', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'textureScale', { label: 'texture scale', min: 10, max: 2000, step: 1 });
+  fSurf.addBinding(look, 'weathering', { label: 'weathering', min: 0, max: 2, step: 0.05 });
   fSurf.addBinding(look, 'normalStrength', { label: 'detail normal', min: 0, max: 3, step: 0.01 });
   fSurf.addBinding(look, 'macroNormal', { label: 'relief normal', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'heightBlend', { label: 'height blend', min: 0, max: 2, step: 0.01 });
@@ -614,7 +615,10 @@ async function main() {
     controller.update(dt);
     holo.update(dt, time);
     sky.update(camera, renderer.getPixelRatio());
-    if (!state.meshSegments) view.autoMeshSegments(camera, renderer.domElement.height, controller.altitude);
+    // Low down, allow a denser mesh so crater rims and ridges stop looking faceted (the 512-texel heightmap is
+    // undersampled at 384). Small bodies get less: their landform octaves still displace the vertices.
+    const maxSeg = controller.altitude < 25 ? (controller.radius >= 600 ? 768 : 512) : 384;
+    if (!state.meshSegments) view.autoMeshSegments(camera, renderer.domElement.height, controller.altitude, 5, maxSeg);
     view.updateFootprint(camera, renderer.domElement.height);
     if (view.group.visible) poiLabels.update(camera, controller.radius, controller.altitude, window.innerWidth, window.innerHeight);
     else poiLabels.update(camera, controller.radius, 0, 1, 1);

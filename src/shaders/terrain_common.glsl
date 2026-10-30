@@ -35,26 +35,37 @@ uniform float uUseCells;   // 1 when any style weight uses the cellular terms (c
 
 const float DETAIL_STEP = 2.15;
 
-// One detail octave at noise-space point q. Returns the value (about -0.6..0.5) and its gradient in q.
-float styleOct(vec3 q, vec4 st, out vec3 g) {
+// One detail octave without the cellular styles (ridged + billowy only). The finest octaves use this directly, so
+// the compiler drops their Worley evaluations (a uniform branch alone would not: D3D flattens it).
+// `soft` rounds the |n| crease: billowy relief with sharp creases at every scale reads as crumpled paper.
+float styleOctSmooth(vec3 q, vec4 st, float soft, out vec3 g) {
   vec3 gn;
   float n = snoiseGrad(q, gn);
-  float sa = sqrt(n * n + 0.004);                 // smooth |n|
+  float sa = sqrt(n * n + soft);                  // smooth |n|
   vec3 gsa = (n / sa) * gn;
   float r = 1.0 - sa;
-  float v = st.x * (r * r - 0.45) + st.y * 0.8 * (sa - 0.35);
   g = (st.x * -2.0 * r + st.y * 0.8) * gsa;
+  return st.x * (r * r - 0.45) + st.y * 0.8 * (sa - 0.35);
+}
+
+// One detail octave at noise-space point q. Returns the value (about -0.6..0.5) and its gradient in q.
+float styleOct(vec3 q, vec4 st, out vec3 g) {
+  float v = styleOctSmooth(q, st, 0.004, g);
   if (uUseCells > 0.5) {
     const float CS = 0.8;                         // cells per noise unit
     float F1, F2, rnd;
     vec3 d1, d2;
     cellular2(q * CS + 31.7, F1, F2, d1, d2, rnd);
     vec3 gF1 = -d1 / max(F1, 1e-4), gF2 = -d2 / max(F2, 1e-4);
-    // Cracks: troughs where the two nearest cells meet.
+    // Cracks: troughs where the two nearest cells meet. Smoothstep profile, so the slope is zero at the trough
+    // edge (a hard-edged profile draws every plate outline as a crisp polygon), and scaled down to read at the
+    // same strength as the other styles for the same weight.
     const float W = 0.13;
-    float t = clamp(1.0 - (F2 - F1) / W, 0.0, 1.0);
-    float vc = 0.12 - 0.75 * t * t;
-    vec3 gc = (1.5 * t / W) * (gF2 - gF1);
+    const float CK = 0.6;
+    float u = clamp(1.0 - (F2 - F1) / W, 0.0, 1.0);
+    float t = u * u * (3.0 - 2.0 * u);
+    float vc = CK * (0.12 - 0.5 * t);
+    vec3 gc = (CK * 3.0 * u * (1.0 - u) / W) * (gF2 - gF1);
     // Pits: about half the cells hold a crater of random size (power-law-ish); bowl inside, rim outside.
     float r2 = fract(rnd * 7.137 + 0.31);
     float has = smoothstep(0.35, 0.5, r2);
@@ -88,6 +99,7 @@ float detailM(vec3 d, float h) {
   float s = uDetailScale;
   for (int k = 0; k < 3; k++) {
     float f = octaveFade(s);
+    if (f <= 0.0) break;   // landforms finer than the mesh live in the fragment normal only
     vec3 g;
     sum += LAND_AMP[k] * f * styleOct(d * (uRadius / s) + float(k) * 7.31, uLandStyle, g);
     s /= DETAIL_STEP;

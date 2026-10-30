@@ -69,6 +69,12 @@ const LAYER_STYLE: [number, number, number, number][] = [
   [0, 0.15, 0.85, 0], // salt
 ];
 
+// Crack-textured layers (ice Ice002, salt Ground031) tile 3-4x smaller than the rest and keep a weaker texture
+// normal, so their texture cracks read as fine fracture grain inside the procedural plates instead of a second
+// plate net at the same size.
+const LAYER_SCALE_MUL = [1, 1, 1, 1, 1, 1, 4, 3.3];
+const LAYER_NORMAL_MUL = [1, 1, 0.8, 1, 1, 1, 0.35, 0.45];
+
 export interface LookParams {
   heightExaggeration: number;
   seaFloorScale: number;
@@ -92,6 +98,8 @@ export interface LookParams {
   heightBlend: number;
   triSharp: number;
   macroVar: number;
+  /** Dust settling in hollows, brighter scree on slopes, regional roughness/brightness drift (0 = off). */
+  weathering: number;
   antiTile: number; // 0 = plain tiling, 1 = hex-tiling (no visible repetition)
   tintStrength: number; // 0 = raw textures, 1 = full per-world layer tints from the generator
   /** 0..1: pulls each layer's brightness toward the world's coverage-weighted mean (softer material edges). */
@@ -132,6 +140,7 @@ export const DEFAULT_LOOK: LookParams = {
   heightBlend: 0.6,
   triSharp: 6,
   macroVar: 0.25,
+  weathering: 1,
   antiTile: 1,
   tintStrength: 1,
   albedoHarmony: 0.3,
@@ -217,6 +226,9 @@ export class PlanetView {
         tOrm: u(layers.orm),
         uLayerScale: u(layers.layers.map(() => 1)),
         uLayerTint: u(layers.layers.map(() => new THREE.Vector3(1, 1, 1))),
+        uLayerMean: u(layers.layers.map((l) => new THREE.Vector3(...(l.meanAlbedo ?? [0.2, 0.2, 0.2])))),
+        uLayerNormal: u(layers.layers.map((l) => LAYER_NORMAL_MUL[l.index] ?? 1)),
+        uWeathering: u(1),
         uNormalStrength: u(1),
         uMacroNormal: u(1),
         uHeightBlend: u(0.6),
@@ -366,7 +378,8 @@ export class PlanetView {
     U.uTerrainAO.value = look.terrainAO;
     // Tiles per km: the texture's real tile size scaled up by textureScale (stylised macro tiling).
     const scales = this.layers.layers.map((l) => 1000 / (l.tileMeters * look.textureScale));
-    U.uLayerScale.value = scales;
+    U.uLayerScale.value = this.layers.layers.map((l, i) => scales[i] * (LAYER_SCALE_MUL[l.index] ?? 1));
+    // The hex grid stays on the plain scales: it is shared by all layers.
     // One shared hex grid: ~0.55 cells per tile of an average layer.
     U.uHexFreq.value = (0.55 * scales.reduce((a, b) => a + b, 0)) / scales.length;
     U.uNormalStrength.value = look.normalStrength;
@@ -374,6 +387,7 @@ export class PlanetView {
     U.uHeightBlend.value = look.heightBlend;
     U.uTriSharp.value = look.triSharp;
     U.uMacroVar.value = look.macroVar;
+    U.uWeathering.value = look.weathering;
     U.uAntiTile.value = look.antiTile;
     U.uWetness.value = look.wetness;
     U.uChannels.value = look.channels;
