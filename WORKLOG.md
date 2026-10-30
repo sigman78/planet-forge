@@ -161,3 +161,29 @@ Newest entries at the bottom. Times are local.
     - rust 104/89/85/104 -> 110/106/94/94
     - grey moon 90/85/80/94 -> 97/90/81/107
     - sulfur 92/83/82/79 -> 86/79/72/94 (R 725 km, the 768-segment mesh)
+- **Phase B (surface rocks, `src/render/rocks.ts`, `rocks` slider):**
+  - **Three levels of instanced blocks.** Each level is a 96x96 window of world cells that follows the camera,
+    mostly ahead of it.
+    - 30 m cells, 2-8 m blocks, below 3 km
+    - 120 m cells, 6-25 m blocks, below 9 km
+    - 450 m cells, 20-80 m blocks, below 30 km
+    - A block of radius r stays above ~2 px out to about r x 1000, so each window is sized to that reach.
+  - **Placement pass on the GPU** each frame (288x96 float target, 3 texels per instance).
+    - A PCG hash of the world cell picks jitter, size (power law) and seed, so rocks stay put while the window moves.
+    - Density comes from the splat (rock > gravel > basalt > highland > ice > dust), slope, cavity AO and a
+      rock-field noise. No rocks under the sea.
+    - Each block sits on the rendered mesh triangle: same tan grid, diagonal and vertex displacement as the terrain.
+    - Terrain cast shadow is sampled once per rock.
+  - **Rocks:**
+    - Lumpy, flattened, faceted icospheres with a per-instance noise shape.
+    - Real-scale texture from the layer they came from, slightly brighter than the regolith.
+    - Same BRDF and cast shadow as the ground (shared `terrain_light.glsl`).
+    - Base contact occlusion, and bounce light from the sunlit ground (otherwise shadowed faces are black on airless worlds).
+    - Blocks below ~1.5 px shrink away. Blocks grow in and out at the window edge.
+  - **Shadows:** tapered decal per rock in its triangle plane, stretched away from the sun by its elevation and
+    multiplied into the ground. Skipped where the terrain is already in shadow.
+  - **Cost:** about 1.2 ms (ice 2 km 101 -> 90 fps, sulfur 2 km 86 -> 78). Every test view stays >= 70 fps.
+  - **Known gaps:**
+    - The window re-hashes when its anchor crosses a cube-face edge.
+    - Decals can clip where a long shadow crosses a mesh edge.
+    - The rust texture normal still reads as streaky "fur" at very low sun.

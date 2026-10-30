@@ -75,6 +75,11 @@ export class PlanetCameraController {
     if (instant) Object.assign(this, this.target);
   }
 
+  /** Camera height above the terrain under it (km), from the last update. */
+  get aboveGround() {
+    return this.groundAlt;
+  }
+
   get state() {
     return { ...this.target };
   }

@@ -19,6 +19,7 @@ import { Pipeline } from './render/pipeline.ts';
 import { createSky } from './render/sky.ts';
 import { PlanetCameraController } from './render/controls.ts';
 import { SunShadowMap } from './render/sunShadow.ts';
+import { Rocks } from './render/rocks.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -56,6 +57,8 @@ async function main() {
     hq: true,
     /** HQ only: how far the terrain's shadow volumes reach up into the dust (1 = physical). */
     shafts: 3,
+    /** Surface rock density (0 = off). */
+    rocks: 1,
     /** Console aid: 1 = shadow map verdict on the ground, 2 = haze glow only. */
     hqDebug: 0,
   };
@@ -98,6 +101,8 @@ async function main() {
   view.setMeshSegments(state.meshSegments || 192);
   scene.add(view.group);
   scene.add(holo.mesh);
+  const rocks = new Rocks(view);
+  view.group.add(rocks.group);
   // Nothing to show until the first world is forged (the hologram stands in).
   view.group.visible = false;
   shared.uAtmoDensity.value = 0;
@@ -486,6 +491,7 @@ async function main() {
   fSurf.addBinding(look, 'seaFloorScale', { label: 'seafloor scale', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'textureScale', { label: 'texture scale', min: 10, max: 2000, step: 1 });
   fSurf.addBinding(look, 'weathering', { label: 'weathering', min: 0, max: 2, step: 0.05 });
+  fSurf.addBinding(state, 'rocks', { label: 'rocks', min: 0, max: 3, step: 0.05 });
   fSurf.addBinding(look, 'normalStrength', { label: 'detail normal', min: 0, max: 3, step: 0.01 });
   fSurf.addBinding(look, 'macroNormal', { label: 'relief normal', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'heightBlend', { label: 'height blend', min: 0, max: 2, step: 0.01 });
@@ -620,6 +626,7 @@ async function main() {
     const maxSeg = controller.altitude < 25 ? (controller.radius >= 600 ? 768 : 512) : 384;
     if (!state.meshSegments) view.autoMeshSegments(camera, renderer.domElement.height, controller.altitude, 5, maxSeg);
     view.updateFootprint(camera, renderer.domElement.height);
+    if (view.group.visible) rocks.update(renderer, camera, controller.aboveGround, state.rocks, look.debug);
     if (view.group.visible) poiLabels.update(camera, controller.radius, controller.altitude, window.innerWidth, window.innerHeight);
     else poiLabels.update(camera, controller.radius, 0, 1, 1);
     camInfo.text = `alt ${controller.altitude.toFixed(1)} km\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
@@ -633,7 +640,7 @@ async function main() {
 
   // Expose for debugging in the console.
   Object.assign(window as unknown as Record<string, unknown>, {
-    forge: { renderer, scene, camera, view, pipeline, controller, sunShadow, tour, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
+    forge: { renderer, scene, camera, view, rocks, pipeline, controller, sunShadow, tour, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
   });
 }
 

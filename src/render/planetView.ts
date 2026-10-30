@@ -11,6 +11,7 @@ import atmoCommonGlsl from '../shaders/atmosphere_common.glsl?raw';
 import terrainCommon from '../shaders/terrain_common.glsl?raw';
 import terrainVert from '../shaders/terrain.vert.glsl?raw';
 import terrainFrag from '../shaders/terrain.frag.glsl?raw';
+import terrainLight from '../shaders/terrain_light.glsl?raw';
 import oceanGlsl from '../shaders/ocean.glsl?raw';
 
 export const COMMON = `${cubeGlsl}\n${noiseGlsl}\n${atmoCommonGlsl}\n`;
@@ -253,7 +254,7 @@ export class PlanetView {
         uUnitColors: u(Array.from({ length: MAX_UNITS }, () => new THREE.Color(0.5, 0.5, 0.5))),
       },
       vertexShader: COMMON + terrainCommon + terrainVert,
-      fragmentShader: COMMON + terrainCommon + terrainFrag,
+      fragmentShader: COMMON + terrainCommon + terrainLight + terrainFrag,
     });
 
     const [ov, of] = splitShader(oceanGlsl);
