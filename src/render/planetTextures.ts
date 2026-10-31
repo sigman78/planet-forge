@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import type { PlanetData } from '../core/types.ts';
-import { faceToDir, texelToS } from '../core/cube.ts';
+import { faceToDir, padFaces, texelToS } from '../core/cube.ts';
+
+/**
+ * Gutter (texels per side) of the GPU copies. PlanetData carries 1; the GPU copies are repacked with 8 so
+ * that the mip chain stays seamless across cube faces (see `padFaces`). The shader's `cubeTexCoord` and
+ * this constant must agree.
+ */
+export const GPU_GUTTER = 8;
 
 /** GPU-side copies of a PlanetData: 6-layer array textures (one layer per cube face). */
 export interface PlanetTextures {
@@ -42,12 +49,22 @@ function arrayTex(
  * scales (box blurs via summed-area tables), turned into an occlusion angle. Cheap (a few ms) and
  * makes crater floors, rilles and valleys read at every zoom level.
  */
-export function computeTerrainAO(height: Float32Array, N: number, radiusM: number): Uint8Array {
-  const T = N + 2;
+export function aoBlurRadii(N: number): [number, number] {
+  return [Math.max(2, Math.round(N / 160)), Math.max(6, Math.round(N / 40))];
+}
+
+/**
+ * `height` is a face array with a `G`-texel gutter (6 faces of (N + 2G)^2). The box windows reach `radii[1]`
+ * texels, so with G >= that radius every texel's window holds real neighbour data and the AO is seamless
+ * across faces; a 1-texel gutter truncated the windows at the face border and left a band of wrong AO
+ * along every edge. Output has the same layout as the input.
+ */
+export function computeTerrainAO(height: Float32Array, N: number, radiusM: number, G = 1): Uint8Array {
+  const T = N + 2 * G;
   const out = new Uint8Array(T * T * 6);
   const texelM = (radiusM * Math.PI * 0.5) / N;
   const sat = new Float64Array((T + 1) * (T + 1));
-  const radii = [Math.max(2, Math.round(N / 160)), Math.max(6, Math.round(N / 40))];
+  const radii = aoBlurRadii(N);
   const occ = new Float32Array(T * T);
   for (let f = 0; f < 6; f++) {
     const base = f * T * T;
@@ -84,8 +101,8 @@ export function computeTerrainAO(height: Float32Array, N: number, radiusM: numbe
  * Unlike finite differences of bilinear heights in the shader, bilinear filtering of per-texel gradients is
  * continuous (no per-texel facets), and the mip chain averages the slopes instead of aliasing from orbit.
  */
-export function computeHeightGradient(height: Float32Array, N: number, radiusM: number): Uint16Array {
-  const T = N + 2;
+export function computeHeightGradient(height: Float32Array, N: number, radiusM: number, G = 1): Uint16Array {
+  const T = N + 2 * G;
   const Rk = radiusM / 1000;
   const out = new Uint16Array(T * T * 6 * 4);
   const dirs = new Float32Array(T * T * 3);
@@ -94,7 +111,7 @@ export function computeHeightGradient(height: Float32Array, N: number, radiusM: 
   for (let f = 0; f < 6; f++) {
     for (let y = 0; y < T; y++)
       for (let x = 0; x < T; x++) {
-        faceToDir(f, texelToS(x, N), texelToS(y, N), d);
+        faceToDir(f, texelToS(x - G + 1, N), texelToS(y - G + 1, N), d);
         const i = (y * T + x) * 3;
         dirs[i] = d[0]; dirs[i + 1] = d[1]; dirs[i + 2] = d[2];
       }
@@ -125,16 +142,33 @@ export function computeHeightGradient(height: Float32Array, N: number, radiusM: 
   return out;
 }
 
+/** Narrow a face array's gutter from `from` to `to` texels per side. */
+function cropGutter<A extends Uint8Array | Uint16Array | Float32Array>(data: A, N: number, channels: number, from: number, to: number): A {
+  if (from === to) return data;
+  const Tf = N + 2 * from, Tt = N + 2 * to, d = from - to;
+  const out = new (data.constructor as new (n: number) => A)(6 * Tt * Tt * channels);
+  for (let f = 0; f < 6; f++)
+    for (let y = 0; y < Tt; y++) {
+      const src = ((f * Tf + y + d) * Tf + d) * channels;
+      out.set(data.subarray(src, src + Tt * channels) as unknown as ArrayLike<number>, ((f * Tt + y) * Tt) * channels);
+    }
+  return out;
+}
+
 export function createPlanetTextures(planet: PlanetData, renderer: THREE.WebGLRenderer): PlanetTextures {
   const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  const T = planet.T;
+  const N = planet.N, G = GPU_GUTTER, T = N + 2 * G;
+  const heightG = padFaces(planet.height, N, 1, G);
   // R32F: no mipmaps (not renderable everywhere); linear filtering needs OES_texture_float_linear.
-  const height = arrayTex(planet.height, T, THREE.RedFormat, THREE.FloatType, false, 1);
-  const splat0 = arrayTex(planet.splat0, T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
-  const splat1 = arrayTex(planet.splat1, T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
-  const climate = arrayTex(planet.climate, T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
-  const ao = arrayTex(computeTerrainAO(planet.height, planet.N, planet.radius), T, THREE.RedFormat, THREE.UnsignedByteType, true, aniso);
-  const grad = arrayTex(computeHeightGradient(planet.height, planet.N, planet.radius), T, THREE.RGBAFormat, THREE.HalfFloatType, true, aniso);
+  const height = arrayTex(heightG, T, THREE.RedFormat, THREE.FloatType, false, 1);
+  const splat0 = arrayTex(padFaces(planet.splat0, N, 4, G), T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
+  const splat1 = arrayTex(padFaces(planet.splat1, N, 4, G), T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
+  const climate = arrayTex(padFaces(planet.climate, N, 4, G), T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
+  // AO on a pad as wide as its largest blur window, then cropped to the GPU gutter.
+  const Pao = Math.max(G, aoBlurRadii(N)[1] + 1);
+  const aoWide = computeTerrainAO(Pao === G ? heightG : padFaces(planet.height, N, 1, Pao), N, planet.radius, Pao);
+  const ao = arrayTex(cropGutter(aoWide, N, 1, Pao, G), T, THREE.RedFormat, THREE.UnsignedByteType, true, aniso);
+  const grad = arrayTex(computeHeightGradient(heightG, N, planet.radius, G), T, THREE.RGBAFormat, THREE.HalfFloatType, true, aniso);
   return {
     N: planet.N,
     height,

@@ -605,6 +605,23 @@ Newest entries at the bottom. Times are local.
     instances); the user was fine without them ("im okay with lower number of 'pebbles' in near view, you could
     save some perf on that"), so the windows stay at 96 cells and the count is what it was: three levels of
     9 216 instances.
+- **Cube-face seams (user: "there is still sometimes a seam in some generated textures along the planet cube
+  faces edge").** The generated data is seamless: a check of every face edge on CLI exports (height, both
+  splats, climate, unit ids; `scratchpad/seamcheck.ts`) found the cross-edge texel step equal to the in-face
+  step and the height gutters an exact match. Two renderer-side defects were found instead. The baked
+  terrain AO blurred each face with box windows of up to N/40 texels that clipped at the face border, so a
+  band along every edge had AO from a truncated neighbourhood: cross-edge step 2–3× the in-face step, jumps
+  up to 114/255. And the GPU copies carried the data's 1-texel gutter, which the mip chain averages into the
+  interior at level 1 and loses from level 2, after which the sampler clamps at the face border: any data
+  texture read above LOD 1 (splats, climate, AO, gradient from orbit) could show the edge. Now
+  `padFaces()` (cube.ts) repacks any face array with a gutter of any width from the neighbouring faces'
+  interiors; the GPU copies carry 8 texels (`GPU_GUTTER`, N + 16 per side, which halves evenly to a half
+  texel at mip level 4), `cubeTexCoord` maps into that layout, and the AO is computed on a pad as wide as its
+  largest window and cropped. The PlanetData contract, CLI exports, cache and CPU sampling are untouched.
+  After: AO cross-edge ratio 0.9–1.0, face centres unchanged; a column-step metric across the +X/+Z edge in
+  the rendered frame (`.playwright-mcp/seamtest2.js`, three altitudes, mips and AO on/off) stays below the
+  98th percentile of ordinary steps before and after, so Rust 26508 never showed it at that edge; the
+  user's sightings are on other worlds or edges, and both defects were real regardless.
   - Checked on Rust: the dive stops at 500 m over the probed ground with the rings off, the probe reads the
     coarse surface (801.675 km at the test spot), 27 programs and none failing, rocks and the big blocks draw at
     the floor. Script: `.playwright-mcp/floorcheck.js`.

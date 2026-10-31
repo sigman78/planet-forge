@@ -130,6 +130,53 @@ export function sampleDir(data: ArrayLike<number>, N: number, x: number, y: numb
 }
 
 /**
+ * Repack a face array (6 faces of (N + 2)^2 texels, `channels` interleaved) into one with a `G`-texel gutter
+ * on every side: the interior is copied, each gutter texel takes a bilinear sample of the owning face's
+ * interior at its own direction (corners land on a third face). A wide gutter keeps the mip chain of the GPU
+ * copies seamless: level k still has G / 2^k texels of neighbour data beyond the interior, where a 1-texel
+ * gutter is averaged into the interior at level 1 and the edge clamps from then on. G = 8 gives a texture
+ * of N + 16 texels, which halves evenly down to a half-texel gutter at level 4.
+ */
+export function padFaces<A extends Float32Array | Uint8Array | Uint16Array>(data: A, N: number, channels: number, G: number): A {
+  const T = N + 2, P = N + 2 * G;
+  const out = new (data.constructor as new (n: number) => A)(6 * P * P * channels);
+  const dir: Vec3 = [0, 0, 0];
+  const fc: FaceCoord = { face: 0, s: 0, t: 0 };
+  const round = data instanceof Float32Array ? (v: number) => v : (v: number) => Math.round(v);
+  for (let f = 0; f < 6; f++) {
+    for (let y = 0; y < P; y++) {
+      const sy = y - G + 1;   // source row in the N + 2 layout
+      for (let x = 0; x < P; x++) {
+        const sx = x - G + 1;
+        const o = ((f * P + y) * P + x) * channels;
+        if (sx >= 1 && sx <= N && sy >= 1 && sy <= N) {
+          const i = ((f * T + sy) * T + sx) * channels;
+          for (let c = 0; c < channels; c++) out[o + c] = data[i + c];
+          continue;
+        }
+        // Gutter: this texel's centre on the owning face, sampled from that face's interior.
+        faceToDir(f, ((sx - 0.5) * 2) / N - 1, ((sy - 0.5) * 2) / N - 1, dir);
+        dirToFace(dir[0], dir[1], dir[2], fc);
+        const px = Math.min(Math.max(sToTexel(fc.s, N), 1), N);
+        const py = Math.min(Math.max(sToTexel(fc.t, N), 1), N);
+        const x0 = Math.min(Math.floor(px), N - 1);
+        const y0 = Math.min(Math.floor(py), N - 1);
+        const fx = px - x0;
+        const fy = py - y0;
+        const i00 = ((fc.face * T + y0) * T + x0) * channels;
+        const i10 = i00 + channels, i01 = i00 + T * channels, i11 = i01 + channels;
+        for (let c = 0; c < channels; c++) {
+          const top = data[i00 + c] + (data[i10 + c] - data[i00 + c]) * fx;
+          const bot = data[i01 + c] + (data[i11 + c] - data[i01 + c]) * fx;
+          out[o + c] = round(top + (bot - top) * fy);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Refill the gutter texels of a single-channel face array from the neighbouring faces' interiors.
  * Call after any pass that modifies interior texels (e.g. erosion).
  */

@@ -22,10 +22,11 @@ vec3 dirToFace(vec3 d) {
   return vec3(atan(c) * (4.0 / 3.14159265358979), face);
 }
 
-// Direction -> (u, v, layer) texture coordinate into a sampler2DArray with interior res N (+2 gutter).
+// Direction -> (u, v, layer) texture coordinate into a sampler2DArray with interior res N and an 8-texel
+// gutter per side (GPU_GUTTER in planetTextures.ts; the data's own gutter is 1, the GPU copies are repacked).
 vec3 cubeTexCoord(vec3 d, float N) {
   vec3 stf = dirToFace(d);
-  vec2 uv = ((stf.xy + 1.0) * 0.5 * N + 1.0) / (N + 2.0);
+  vec2 uv = ((stf.xy + 1.0) * 0.5 * N + 8.0) / (N + 16.0);
   return vec3(uv, stf.z);
 }
 
