@@ -39,6 +39,10 @@
       #pois .poi b { position: absolute; left: 18px; top: -27px; font: 600 11px 'Chakra Petch', sans-serif; letter-spacing: 0.16em; text-transform: uppercase; white-space: nowrap; color: var(--fg); text-shadow: 0 0 4px #000, 0 0 10px #000; }
       #pois .poi span { position: absolute; left: 18px; top: -12px; font: 10px 'JetBrains Mono', monospace; white-space: nowrap; color: var(--dim); text-shadow: 0 0 4px #000, 0 0 8px #000; }
       #pois .poi-basin b, #pois .poi-rift b { color: var(--accent); }
+      /* Height of the camera above whatever is under it (ground, sea, lava or ice); stays when the UI is hidden. */
+      #agl { position: fixed; left: 20px; bottom: 44px; font: 12px/1 'JetBrains Mono', monospace; color: var(--fg); pointer-events: none; user-select: none; text-shadow: 0 1px 3px #000, 0 0 8px #000; }
+      #agl:empty { display: none; }
+      #agl b { font-weight: 400; color: var(--dim); letter-spacing: 0.18em; margin-right: 8px; }
       #help { position: fixed; left: 20px; bottom: 16px; font: 11px/1.6 'JetBrains Mono', monospace; color: var(--dim); pointer-events: none; }
       #help kbd { color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font: inherit; }
       /* Formation history as subtitles: quiet, centred, no box. */
@@ -79,6 +83,7 @@
     <div id="pane"></div>
     <div id="pois"></div>
     <div id="captions"></div>
+    <div id="agl"></div>
     <div id="help"><kbd>drag</kbd> orbit · <kbd>wheel</kbd> zoom · <kbd>right-drag</kbd> look · <kbd>WASD</kbd> fly to cursor · <kbd>E/Q</kbd> up/down · <kbd>R</kbd> new seed · <kbd>H</kbd> hide UI · <kbd>T</kbd> captions · <kbd>L</kbd> labels · <kbd>P</kbd> tour · <kbd>1-9</kbd> debug views</div>
     <div id="boot">FORGING…</div>
     <script type="module" src="/src/main.ts"></script>

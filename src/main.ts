@@ -20,7 +20,7 @@ import { createSky } from './render/sky.ts';
 import { PlanetCameraController } from './render/controls.ts';
 import { SunShadowMap } from './render/sunShadow.ts';
 import { Rocks } from './render/rocks.ts';
-import { HQ_MAX_LEVELS, HQ_RING_CELLS, HQTerrain } from './render/hqTerrain.ts';
+import { HQ_MAX_LEVELS, HQ_RING_CELLS, HQTerrain, PROBE_N } from './render/hqTerrain.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -56,8 +56,9 @@ async function main() {
     autoLook: true,
     cache: true, // reuse planets stored in IndexedDB (production builds)
     meshSegments: 0, // 0 = auto (by on-screen size)
-    /** HQ terrain: nested mesh rings near the camera carry the procedural relief as real geometry. */
-    hqTerrain: false,
+    /** HQ terrain: nested mesh rings near the camera carry the procedural relief as real geometry. Without them
+     * the camera stops 400 m plus a relief margin (~1 km) above the baked heightmap; with them, `hqFloor`. */
+    hqTerrain: true,
     /** HQ terrain: lowest camera height above the drawn ground (km) once the GPU probe reports it. */
     hqFloor: 0.1,
     /** HQ terrain: cells per ring side (32: cheaper; 64: relief carried twice as far out). */
@@ -133,6 +134,9 @@ async function main() {
   pipeline.atmoUniforms.uSunShadowS.value = sunShadow.size;
   const controller = new PlanetCameraController(camera, renderer.domElement);
   controller.nearFloor = reversedDepth ? 0.005 : 0.02;
+  // Directions the surface probe samples each frame (nadir, a ring around it, the path ahead).
+  const probeDirs = Array.from({ length: PROBE_N }, () => new THREE.Vector3());
+  const probeAllow = new Float32Array(PROBE_N);
   controller.surface = (dir) => {
     const d = view.data;
     // While the hologram stands in, the old terrain must not push the camera around.
@@ -140,6 +144,33 @@ async function main() {
     // HQ rings: the GPU reports the drawn surface under the camera, so the margin for unknown relief can go.
     if (!Number.isNaN(hqTerrain.probeRadius)) return Math.max(view.seaSolid ? controller.radius : -Infinity, hqTerrain.probeRadius + 0.003);
     return view.surfaceRadiusKm(dir, (x, y, z) => sampleDir(d.height, d.N, x, y, z));
+  };
+
+  // Height counter: the camera above whatever lies under it (terrain, or the sea, lava or ice shell when that is
+  // higher), without the controller's safety margins. From the GPU probe of the drawn surface while the HQ rings
+  // run; from the baked heightmap otherwise, which lacks the procedural relief, hence the "~".
+  const aglCounter = {
+    el: $('agl'),
+    last: '',
+    dir: new THREE.Vector3(),
+    update() {
+      const d = view.data;
+      let text = '';
+      if (d && view.group.visible) {
+        const R = controller.radius;
+        const r = camera.position.length();
+        this.dir.copy(camera.position).divideScalar(r);
+        const probed = !Number.isNaN(hqTerrain.probeRadius);
+        const ground = probed ? hqTerrain.probeRadius : view.surfaceRadiusKm(this.dir, (x, y, z) => sampleDir(d.height, d.N, x, y, z), false);
+        const h = r - Math.max(ground, view.seaSolid ? R : -Infinity);
+        const num = h < 10 ? `${h < 1 ? Math.round(h * 1000) : Math.round(h * 100) * 10} m` : `${h.toFixed(h < 100 ? 1 : 0)} km`;
+        text = `<b>HEIGHT</b>${probed ? '' : '~'}${num}`;
+      }
+      if (text !== this.last) {
+        this.last = text;
+        this.el.innerHTML = text;
+      }
+    },
   };
 
   // ---- Apply settings --------------------------------------------------------------------------
@@ -577,6 +608,7 @@ async function main() {
   tDebug.addBinding(look, 'debug', { label: 'view', options: DEBUG_VIEWS });
   tDebug.addBinding(look, 'wireframe');
   tDebug.addBinding(state, 'hqTerrain', { label: 'HQ terrain' }).on('change', () => state.hqTerrain && hqTerrain.compile(renderer, camera, scene));
+  if (state.hqTerrain) hqTerrain.compile(renderer, camera, scene);
   tDebug.addBinding(state, 'hqFloor', { label: 'HQ floor (km)', min: 0.02, max: 0.4, step: 0.01 });
   tDebug.addBinding(state, 'hqCells', { label: 'HQ ring cells', options: Object.fromEntries(HQ_RING_CELLS.map((n) => [String(n), n])) });
   tDebug.addBinding(state, 'hqLevels', { label: 'HQ levels', min: 1, max: HQ_MAX_LEVELS, step: 1 });
@@ -661,11 +693,13 @@ async function main() {
     hqTerrain.maxLevels = state.hqLevels;
     hqTerrain.cellPx = state.hqCellPx;
     hqTerrain.update(camera, controller.aboveGround, view.terrainMat.uniforms.uPixelAngle.value, state.hqTerrain && view.group.visible);
-    hqTerrain.probe(renderer, camera);
+    hqTerrain.probe(renderer, probeDirs, probeAllow, controller.probeDirs(probeDirs, probeAllow));
     controller.minAltitude = Number.isNaN(hqTerrain.probeRadius) ? 0.4 : state.hqFloor;
+    controller.probeFloor = hqTerrain.probeFloor + 0.003;
     if (view.group.visible) rocks.update(renderer, camera, controller.aboveGround, state.rocks, look.debug);
     if (view.group.visible) poiLabels.update(camera, controller.radius, controller.altitude, window.innerWidth, window.innerHeight);
     else poiLabels.update(camera, controller.radius, 0, 1, 1);
+    aglCounter.update();
     camInfo.text = `alt ${controller.altitude.toFixed(1)} km · ${(controller.aboveGround * 1000).toFixed(0)} m above ground\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
     const hq = state.hq && view.group.visible && shared.uHaze.value + shared.uMie.value * shared.uAtmoDensity.value > 0;
     pipeline.atmoUniforms.uHQ.value = hq ? 1 + state.hqDebug : 0;

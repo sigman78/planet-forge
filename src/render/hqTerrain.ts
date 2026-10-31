@@ -22,6 +22,8 @@ const FACE_HYSTERESIS = 0.02;
 const BLOCK = 8;
 /** Chunk sets per grid: the 4 hole variants (child offset b = 0/1 per axis), then the full grid. */
 const FULL = 4;
+/** Directions the surface probe samples per frame (pixels of its render target). */
+export const PROBE_N = 24;
 
 /** Everything that depends on the ring size n (cells per side). */
 interface RingGrid {
@@ -119,14 +121,18 @@ export class HQTerrain {
   /** Cap on the levels drawn. */
   maxLevels = HQ_MAX_LEVELS;
   /**
-   * Surface radius (km) the rings draw under the camera, read back from the GPU about a frame late; NaN while the
-   * rings are off or no reading has arrived yet.
+   * Surface radius (km) the rings draw under the camera (the first probe direction), read back from the GPU
+   * about a frame late; NaN while the rings are off or no reading has arrived yet.
    */
   probeRadius = NaN;
-  private probeRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.FloatType, depthBuffer: false, generateMipmaps: false });
+  /** Highest surface radius over all the probe's directions, each less its allowance (km); NaN as above. */
+  probeFloor = NaN;
+  private probeRT = new THREE.WebGLRenderTarget(PROBE_N, 1, { type: THREE.FloatType, depthBuffer: false, generateMipmaps: false });
   private probeMat: THREE.ShaderMaterial;
   private probeQuad: FullScreenQuad;
-  private probeBuf = new Float32Array(4);
+  private probeBuf = new Float32Array(PROBE_N * 4);
+  private probeAllow = new Float32Array(PROBE_N);
+  private probeCount = 0;
   private probeBusy = false;
   /** Bumped whenever the rings turn off, so readings in flight from before are dropped. */
   private probeGen = 0;
@@ -135,9 +141,9 @@ export class HQTerrain {
   constructor(private view: PlanetView) {
     const T = view.terrainMat.uniforms;
     this.probeMat = new THREE.ShaderMaterial({
-      uniforms: { ...T, uProbeDir: { value: new THREE.Vector3(0, 1, 0) }, uProbeFp: { value: 1 } },
+      uniforms: { ...T, uProbeDir: { value: Array.from({ length: PROBE_N }, () => new THREE.Vector3(0, 1, 0)) }, uProbeFp: { value: 1 } },
       vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: COMMON + terrainCommon + terrainFine + probeFrag,
+      fragmentShader: `#define PROBE_N ${PROBE_N}\n` + COMMON + terrainCommon + terrainFine + probeFrag,
       depthTest: false,
       depthWrite: false,
     });
@@ -370,14 +376,22 @@ export class HQTerrain {
     this.view.terrainMat.uniforms.uHQK.value = 0;
     for (const r of this.rings) r.mesh.visible = false;
     if (!Number.isNaN(this.probeRadius) || this.probeBusy) this.probeGen++;
-    this.probeRadius = NaN;
+    this.probeRadius = this.probeFloor = NaN;
   }
 
-  /** Ask the GPU for the ring surface under the camera (one pixel, read back asynchronously). */
-  probe(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
-    if (this.activeLevels === 0 || this.probeBusy) return;
+  /**
+   * Ask the GPU for the ring surface under the first `count` of `dirs` (one pixel each, read back asynchronously).
+   * The first direction is the camera's nadir (`probeRadius`); `probeFloor` is the highest radius over all of
+   * them after each one's `allow` (km) is taken off.
+   */
+  probe(renderer: THREE.WebGLRenderer, dirs: THREE.Vector3[], allow: ArrayLike<number>, count: number) {
+    const n = Math.min(count, dirs.length, PROBE_N);
+    if (this.activeLevels === 0 || this.probeBusy || n === 0) return;
     const U = this.probeMat.uniforms;
-    (U.uProbeDir.value as THREE.Vector3).copy(camera.position).normalize();
+    const ud = U.uProbeDir.value as THREE.Vector3[];
+    for (let i = 0; i < PROBE_N; i++) ud[i].copy(dirs[Math.min(i, n - 1)]);
+    for (let i = 0; i < n; i++) this.probeAllow[i] = allow[i];
+    this.probeCount = n;
     U.uProbeFp.value = this.finestFp;
     const prev = renderer.getRenderTarget();
     renderer.setRenderTarget(this.probeRT);
@@ -386,9 +400,16 @@ export class HQTerrain {
     this.probeBusy = true;
     const gen = this.probeGen;
     renderer
-      .readRenderTargetPixelsAsync(this.probeRT, 0, 0, 1, 1, this.probeBuf)
+      .readRenderTargetPixelsAsync(this.probeRT, 0, 0, PROBE_N, 1, this.probeBuf)
       .then(() => {
-        if (gen === this.probeGen && this.activeLevels > 0 && Number.isFinite(this.probeBuf[0])) this.probeRadius = this.probeBuf[0];
+        if (gen !== this.probeGen || this.activeLevels === 0 || !Number.isFinite(this.probeBuf[0])) return;
+        this.probeRadius = this.probeBuf[0];
+        let floor = -Infinity;
+        for (let i = 0; i < this.probeCount; i++) {
+          const r = this.probeBuf[i * 4];
+          if (Number.isFinite(r)) floor = Math.max(floor, r - this.probeAllow[i]);
+        }
+        this.probeFloor = floor;
       })
       .catch(() => {})
       .finally(() => {

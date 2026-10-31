@@ -76,8 +76,13 @@ float styleOct(vec3 q, vec4 st, out vec3 g) {
     float inside = step(x, 1.0);
     float vp = mix(0.3 * ex, 0.3 + 0.9 * (x * x - 1.0), inside) - 0.05;
     float dp = mix(-1.2 * ex, 1.8 * x, inside);
-    vp *= has; dp *= has;
-    vec3 gp = (dp / rc) * gF1;
+    // A crater reaching its cell's edge stopped dead there (the next cell has its own crater or none), a cliff
+    // the mesh vertices popped over as they slid in the morph bands; fade it out toward the edge instead.
+    float edge = clamp((F2 - F1) / 0.2, 0.0, 1.0);
+    float win = edge * edge * (3.0 - 2.0 * edge);
+    vec3 gwin = (6.0 * edge * (1.0 - edge) / 0.2) * (gF2 - gF1);
+    vec3 gp = (has * win * dp / rc) * gF1 + (has * vp) * gwin;
+    vp *= has * win;
     v += st.z * vc + st.w * vp;
     g += CS * (st.z * gc + st.w * gp);
   }

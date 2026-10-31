@@ -66,6 +66,10 @@ class Level {
   readonly mesh: THREE.Mesh;
   readonly shadow: THREE.Mesh;
   private cellS = 0;
+  /** What the last placement pass was run for; the pass is skipped while nothing in it changes. */
+  private placedKey = '';
+  private placedData: unknown = null;
+  private placedAge = 0;
   /** Ground distance (km) from the nadir to the window edge; shared by the block and shadow materials. */
   private reach = { value: 1 };
   // Per-level views of the shared buffers: each level draws as many windows as it uses.
@@ -94,6 +98,7 @@ class Level {
         uRMax: { value: cfg.rMax },
         uDensity: { value: cfg.density },
         uLevel: { value: index },
+        uSegments: { value: 384 },
         uOcean: { value: 0 },
         uClusterKm: { value: cfg.clusterKm },
         uCamPos: { value: new THREE.Vector3() },
@@ -168,9 +173,26 @@ class Level {
     U.uWindows.value = faces.length;
     this.geo.instanceCount = this.quadGeo.instanceCount = GRID * GRID * faces.length;
     U.uCellS.value = this.cellS;
+    U.uSegments.value = view.segments;
     U.uOcean.value = view.seaSolid ? 1 : 0;
     U.uDensity.value = this.cfg.density * density;
     U.uCamPos.value.copy(camera.position);
+    // Placement depends on the windows, the camera (within 10 cm), the sun and the rings' state; a still camera
+    // keeps last frame's rocks.
+    const T = view.terrainMat.uniforms;
+    const K = T.uHQK.value as number;
+    const hqKey = Array.from({ length: K }, (_, k) => {
+      const o = (T.uHQOriginA.value as THREE.Vector2[])[k], n = (T.uHQNadirA.value as THREE.Vector2[])[k];
+      return `${o.x},${o.y},${n.x.toFixed(4)},${n.y.toFixed(4)},${(T.uHQBlendA.value as number[])[k].toFixed(4)}`;
+    }).join(';');
+    const p = camera.position, sun = T.uSunDir.value as THREE.Vector3, morph = T.uHQMorph.value as THREE.Vector2;
+    const key = `${faces.join()}|${U.uAnchor.value.map((a: THREE.Vector3) => `${a.x},${a.y},${a.z}`).join()}|${this.cellS}|${view.segments}|${U.uOcean.value}|${U.uDensity.value}|${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)}|${sun.x.toFixed(3)},${sun.y.toFixed(3)},${sun.z.toFixed(3)}|${K}|${T.uHQFace.value}|${T.uHQN.value}|${morph.x},${morph.y}|${hqKey}`;
+    // Height sliders and the like change the ground without touching the key: a still camera re-places every
+    // 30 frames anyway.
+    if (key === this.placedKey && view.data === this.placedData && ++this.placedAge < 30) return;
+    this.placedKey = key;
+    this.placedData = view.data;
+    this.placedAge = 0;
     const prev = renderer.getRenderTarget();
     renderer.setRenderTarget(this.rt);
     this.quad.render(renderer);

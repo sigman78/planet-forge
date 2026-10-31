@@ -36,8 +36,11 @@ interface Flight {
   onDone?: () => void;
 }
 
+const X = new THREE.Vector3(1, 0, 0);
 const Y = new THREE.Vector3(0, 1, 0);
 const _v = new THREE.Vector3();
+const _t1 = new THREE.Vector3();
+const _t2 = new THREE.Vector3();
 const _w = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _m = new THREE.Matrix4();
@@ -102,6 +105,18 @@ export class PlanetCameraController {
   flySpeed = 1.2;
   /** Returns terrain surface radius (km) under a unit direction. */
   surface: (dir: THREE.Vector3) => number = () => this.radius;
+  /**
+   * Highest ground radius (km) among the samples `probeDirs` asked for (each less its allowance), set by the
+   * host when a reading arrives; NaN when there is none. The camera eases up to `minAltitude` above it.
+   */
+  probeFloor = NaN;
+  /** The eased floor radius (km) the camera keeps above and its rate (km/s); NaN until the first update. */
+  private floorR = NaN;
+  private floorV = 0;
+  /** Camera velocity (km/s) over the last update, for the look-ahead samples. */
+  private vel = new THREE.Vector3();
+  private prevPos = new THREE.Vector3();
+  private hasPrev = false;
 
   /** Current frame (eases toward `target.frame`). */
   private frame = frameFrom(0.35, 0.6, 0);
@@ -171,7 +186,45 @@ export class PlanetCameraController {
       this.frame.copy(this.target.frame);
       this.altitude = this.target.altitude;
       this.userPitch = this.target.userPitch;
+      // A cut: the floor restarts where the new ground is, and the jump is not a velocity.
+      this.floorR = NaN;
+      this.hasPrev = false;
+      this.vel.set(0, 0, 0);
     }
+  }
+
+  /**
+   * Directions for the host's surface probe: the nadir; two rings of 8 around it, half and the full floor height
+   * out, with that distance as allowance (a 45° cone: ground beside the camera counts only when it would reach
+   * into the cone); and five along the velocity 0.5 to 3 s ahead, allowed the height the camera can climb on
+   * the way there (0.4 of the distance, less the 0.5 s the spring lags), so distant ground only lifts it as
+   * steeply as needed. Fills `dirs` and `allow` (km to take off each sample); returns the count.
+   */
+  probeDirs(dirs: THREE.Vector3[], allow: Float32Array): number {
+    const n = upOf(this.frame, this.dir);
+    const R = this.radius;
+    let k = 0;
+    const put = (off: THREE.Vector3, a: number) => {
+      if (k >= dirs.length) return;
+      dirs[k].copy(n).add(off).normalize();
+      allow[k++] = a;
+    };
+    put(_v.set(0, 0, 0), 0);
+    const t1 = _t1.crossVectors(n, Math.abs(n.y) < 0.9 ? Y : X).normalize();
+    const t2 = _t2.crossVectors(n, t1);
+    const D = Math.max(this.minAltitude, 0.02);
+    for (const s of [0.5 * D, D]) {
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        put(_v.copy(t1).multiplyScalar((Math.cos(a) * s) / R).addScaledVector(t2, (Math.sin(a) * s) / R), s);
+      }
+    }
+    const vt = _w.copy(this.vel).addScaledVector(n, -this.vel.dot(n));
+    if (vt.lengthSq() > 1e-12) {
+      const v = vt.length();
+      for (const t of [0.5, 1, 1.5, 2, 3]) put(_v.copy(vt).multiplyScalar(t / R), 0.4 * v * Math.max(t - 0.5, 0));
+    }
+    return k;
   }
 
   /** Camera height above the terrain under it (km), from the last update. */
@@ -328,7 +381,12 @@ export class PlanetCameraController {
     e.preventDefault();
     this.takeOver();
     const delta = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
-    this.zoomBy(Math.exp(delta * 0.0012));
+    // A notch (100 units) is a gentler step low down: ×1.06 under 2 km above the ground, ×1.13 from 20 km up,
+    // ramping in log height between. Low over high ground this used to multiply the datum altitude, so one notch
+    // at 100 m over a 3 km plateau was a 500 m leap.
+    const h = Math.max(Math.max(this.target.altitude, this.altitude) - (this.groundR - this.radius), this.minAltitude);
+    const t = THREE.MathUtils.clamp(Math.log(h / 2) / Math.log(10), 0, 1);
+    this.zoomBy(Math.exp(delta * 0.0012 * (0.5 + 0.5 * t)));
   };
 
   private onKeyDown = (e: KeyboardEvent) => {
@@ -344,8 +402,13 @@ export class PlanetCameraController {
     }
   };
 
+  /** Scale the height above the ground under the camera by f (the datum altitude would make steps over high
+   * ground huge and over deep basins tiny). */
   zoomBy(f: number) {
-    this.target.altitude = THREE.MathUtils.clamp(this.target.altitude * f, this.minAltitude, this.maxAltitude);
+    const g = this.groundR - this.radius;
+    // From the camera's own height when the terrain floor holds it above its target.
+    const h = Math.max(Math.max(this.target.altitude, this.altitude) - g, this.minAltitude);
+    this.target.altitude = THREE.MathUtils.clamp(g + h * f, g + this.minAltitude, this.maxAltitude);
   }
 
   /** Apply held fly keys to the target view. */
@@ -429,15 +492,32 @@ export class PlanetCameraController {
     this.userPitch += (T.userPitch - this.userPitch) * a;
 
     const n = upOf(this.frame, this.dir);
-    // Keep above the terrain.
+    // Keep above the terrain. The floor is `minAltitude` over the highest ground the probe saw around and ahead
+    // of the camera, followed by a critically damped spring (0.25 s up, 1 s down) so rising ground lifts the
+    // camera before it gets there, without a kick, and lets it back down afterwards; the target height is left
+    // alone, so the lift is temporary. The ground right under the camera stays a hard stop at half that height
+    // for whatever the samples missed, and that one does raise the target.
     const ground = this.surface(n);
-    const minR = ground + this.minAltitude;
-    let r = this.radius + this.altitude;
-    if (r < minR) {
-      r = minR;
-      this.altitude = r - this.radius;
-      T.altitude = Math.max(T.altitude, this.altitude);
+    const soft = Math.max(ground, this.probeFloor || -Infinity) + this.minAltitude;
+    if (Number.isNaN(this.floorR)) {
+      this.floorR = soft;
+      this.floorV = 0;
+    } else {
+      const w = 1 / (soft > this.floorR ? 0.25 : 1);
+      const x = this.floorR - soft;
+      const c = this.floorV + w * x;
+      const e = Math.exp(-w * dt);
+      this.floorR = soft + (x + c * dt) * e;
+      this.floorV = (this.floorV - w * dt * c) * e;
     }
+    let r = this.radius + this.altitude;
+    const hard = ground + this.minAltitude * 0.5;
+    if (r < hard) {
+      r = hard;
+      T.altitude = Math.max(T.altitude, r - this.radius);
+    }
+    if (r < this.floorR) r = this.floorR;
+    this.altitude = r - this.radius;
 
     const altAboveGround = r - ground;
     let pitch = this.autoPitch(r, ground) - this.userPitch;
@@ -448,6 +528,9 @@ export class PlanetCameraController {
 
     // Camera = frame tilted down by the pitch about its right axis.
     this.camera.position.copy(n).multiplyScalar(r);
+    if (this.hasPrev && dt > 0) this.vel.subVectors(this.camera.position, this.prevPos).divideScalar(dt);
+    this.prevPos.copy(this.camera.position);
+    this.hasPrev = true;
     this.camera.quaternion.copy(this.frame).multiply(_q.setFromAxisAngle(_v.set(1, 0, 0), -pitch));
 
     // Depth range adapted to altitude.

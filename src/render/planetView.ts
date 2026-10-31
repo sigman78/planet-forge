@@ -469,14 +469,14 @@ export class PlanetView {
   }
 
   /** Terrain surface radius (km, displaced) under a world direction, used for camera collision. */
-  surfaceRadiusKm(dir: THREE.Vector3, sampler: (x: number, y: number, z: number) => number): number {
+  surfaceRadiusKm(dir: THREE.Vector3, sampler: (x: number, y: number, z: number) => number, margin = true): number {
     const R = this.shared.uPlanetRadius.value;
     const hM = sampler(dir.x, dir.y, dir.z);
     const U = this.terrainMat.uniforms;
     const h = U.uSeaIce.value > 0.5 ? Math.max(hM, 0) : hM;
     const ex = (h < 0 ? h * U.uSeaFloorScale.value : h) * U.uHeightScale.value;
-    // Margin for the procedural detail relief that the CPU heightmap does not contain.
-    const detail = U.uDetailAmp.value * 1.6 * U.uHeightScale.value;
+    // Margin for the procedural detail relief that the CPU heightmap does not contain (off for a plain reading).
+    const detail = margin ? U.uDetailAmp.value * 1.6 * U.uHeightScale.value : 0;
     // The sea is a floor whether or not the shell is drawn (debug views hide it): the camera must not retilt.
     const sea = this.seaSolid ? R : -Infinity;
     return Math.max(sea, R + ex + detail);

@@ -1,10 +1,11 @@
-// HQ terrain height probe: the surface radius (km) the rings draw under one direction, for the camera ground clamp.
-// One pixel, read back asynchronously.
-uniform vec3 uProbeDir;
-uniform float uProbeFp;   // footprint of the finest ring at the probe point (km)
+// HQ terrain height probe: the surface radius (km) the rings draw under a set of directions (one per pixel), for
+// the camera's ground clamp and its look-ahead. Read back asynchronously.
+uniform vec3 uProbeDir[PROBE_N];
+uniform float uProbeFp;   // footprint of the finest ring at the probe points (km)
 
 void main() {
-  vec3 d = normalize(uProbeDir);
+  int i = clamp(int(gl_FragCoord.x), 0, PROBE_N - 1);
+  vec3 d = normalize(uProbeDir[i]);
   gFootprint = uProbeFp;
   float h = bakedHeightM(d);
   float hM = h + detailM(d, h) + fineReliefM(d, h);

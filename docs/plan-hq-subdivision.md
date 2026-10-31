@@ -160,7 +160,7 @@ Design:
   level's footprint; `renderer.readRenderTargetPixelsAsync` (in r186) with one frame of latency (at
   0.4 km the fly speed is ~8 m/frame, slope 0.2 → ~2 m/frame). `surfaceRadiusKm` uses it when HQ is on and shrinks
   the 0.56 km margin to a few tens of metres; `minAltitude` stays 0.4 km unless the user wants lower.
-- **Toggle.** New `state.hqTerrain` (default `false`), Debug tab next to 'mesh / face', label "HQ terrain".
+- **Toggle.** New `state.hqTerrain` (default `true` since 2026-10-31; was `false`), Debug tab next to 'mesh / face', label "HQ terrain".
   Do not reuse `state.hq`: that is the volumetrics flag (`main.ts:57`, Atmosphere folder, drives `uHQ` and
   `sunShadow.update`). Off = zero extra draws and byte-identical frames. `renderer.compileAsync` the ring program at
   world load so the first toggle does not hitch (the terrain fragment shader is large). `forge.state.hqTerrainDebug`

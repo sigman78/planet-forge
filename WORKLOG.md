@@ -430,3 +430,87 @@ Newest entries at the bottom. Times are local.
   - HUD `camera` line shows metres above ground next to the datum altitude (the "alt" the user compared against was
     the datum altitude).
   - Floor stays at 100 m (user: the current closest is about right; HQ shows there).
+
+- **Rocks on the drawn triangle; ring morph without sideways crawl; crater pits continuous (user: rocks hanging in
+  the air near crater rims; nearby terrain visibly morphing as the camera moves).**
+  - **Why rocks floated:** the previous round set a rock's height from the height field at the drawn footprint. The
+    mesh is a chord of that field, and on a crest the chord lies below it by up to metres at the far rings' cell
+    sizes, so rocks on rims and ridges hung above the triangles. Now `drawnPoint` (rocks_place.frag.glsl) finds the
+    triangle the terrain actually draws under the rock's direction and puts the rock where that direction pierces
+    its plane: the finest HQ ring holding the point (its vertices from the shared `hqRingVertex`, so the rock sees
+    exactly the mesh), else the coarse mesh quad split as geometry.ts does. Where a ring has collapsed onto its
+    parent the grid's triangles are not the drawn ones (odd corners sit on the even ones), so the parent cell's 8
+    triangles are tested in 2-D after the snap and the one holding the point is used; slivers (under 1/20 cell) only
+    count when nothing else holds the point. Only texel 0 of the three per rock runs this; the normal (texel 1)
+    still comes from the field a rock diameter either side, and the draw shaders take a rock's existence from texel
+    0 alone.
+  - **Why the terrain crawled:** across a ring's morph band (box distance 10–12 cells from the nadir, 2 cells wide
+    at 32 cells per ring) odd vertices slid sideways onto their lower even neighbour, so every bump in the band
+    moved at a quarter of the camera's speed, and the band moves with the camera. `hqRingVertex` now keeps a vertex
+    in place and blends its height onto the parent's edge (the chord between its two even neighbours at the
+    parent's footprint; the cell diagonal for the centre vertex, the coarse cell's own diagonal on the outer ring).
+    Once fully the parent it snaps onto the even neighbour as before: the cells between are zero-area and cost no
+    shading, and the rest tile the parent's triangles, the same surface as the morph's end, so the snap shows
+    nothing.
+  - **Why vertices popped:** tracking one jumping rock to its triangle corner (grid index 10607, 5309 at level 4)
+    and probing the field there showed a 4.2 m step over 0.2 m of ground at a fixed footprint. The pitted octave
+    style (terrain_common.glsl) stops a crater dead at its Worley cell edge (the next cell has its own crater or
+    none), a cliff the sliding vertices crossed. The pit now fades out over the last 0.2 noise units before the
+    cell edge (gradient included for the fragment normals), so the field is continuous there.
+  - Drift test (level-0 rocks, 1 m steps at 140 m above ground, rocks within 1.3 km), HQ on, 9 levels:
+
+    | | slide per metre | > 2 m jumps per step | rocks lost per step |
+    |---|---|---|---|
+    | field height (last commit) | 0.02 m mean, 0.29 m max | – | 0 |
+    | pierce, sliding morph | 0.08 m mean, 15 m max | 14–20 of 3740 | 0 |
+    | pierce, height morph, pits windowed | 0.03 m mean, 1.46 m max | 0 | 0 |
+
+    Since the rocks sit on the mesh, the last row is also the mesh's own motion under them. HQ off: 0.00 m.
+    Turning 10° in place: slide max 0.27 m, no rocks lost. By distance from the camera, the max slide per metre
+    is 0.00 within 100 m, 1.4 m at 100–400 m (the 6.4 and 13 m rings' bands, where the 61 and 131 m octaves
+    blend out), under 0.5 m beyond. That is a vertex in a morph band blending from its own detail to the parent
+    chord over the band's 2 cells; a wider band would spread it but costs ring vertices (the band is already 23 %
+    of a ring's cells) and placement time.
+  - The pit window is a look change on every pitted world: craters whose rim or bowl reaches the Worley cell edge
+    now fade out over the last 0.2 noise units instead of stopping at a cliff. Grey Moon close-up and 1.5 km views
+    (`greymoon-close.png`, `greymoon-mid.png`): rims intact, no seams. If faded rims are unwanted, the other fix
+    is to clamp `rc` so craters never reach the edge.
+  - **Cost** (frame best-of-12 at the same spot; placement = the three rock passes alone): placement 0.37 → 1.9 ms
+    with the rings on (0.36 off): the drawn-triangle search evaluates the height field at 3 ring corners (up to 9
+    in a morph band) with the fine octaves live at small footprints. Rings 1.6 → 2.9 ms, of which the band's
+    parent-chord evaluations are 0.7 ms. Frame 10.9 → 11.1–11.5 ms moving. A still camera now skips the placement
+    passes altogether (`placedKey` in rocks.ts: windows, camera within 10 cm, sun, ring origins/nadirs/blends,
+    the world; sliders that move the ground are caught by a forced re-place every 30 frames): 8.8 ms standing
+    still with the rings on.
+  - Screenshot `rim-close.png` (110 m above ground, ridges and skyline): rocks sit on the surface.
+  - D3D still warns "potentially uninitialized variable" for `drawnPoint` (its out value on the no-ring path is
+    assigned before use); harmless.
+  - **Height counter (user).** `#agl` bottom-left, above the key help, stays when the UI is hidden: the camera's
+    height above whatever is under it (terrain, or the sea/lava/ice shell when higher), without the controller's
+    margins. From the GPU probe of the drawn surface while the rings run; from the baked heightmap otherwise,
+    shown with a "~" since that lacks the procedural relief. Metres under 10 km (to 10 m above 1 km), km above.
+  - **HQ terrain on by default** (user: "lowest alt I see is ~950 m"). It was off unless switched on in the Debug
+    tab, and every close-range test here had switched it on by script. Without the rings the floor is 400 m plus
+    the 560 m relief margin over the baked heightmap, about 950 m; with them the probe takes the camera to the
+    100 m floor. The ring program is compiled at start-up so the first dive does not stall.
+  - **Gentler wheel zoom low down (user: one scroll jumped 100 m to 2 km).** Two causes: the wheel scaled the
+    datum altitude, so a notch at 100 m over a 3.4 km plateau multiplied 3.5 km (a 450 m leap), and the step was
+    ×1.13 per notch everywhere. `zoomBy` now scales the height above the ground under the camera, and a notch is
+    ×1.06 under 2 km up, ×1.13 from 20 km up, ramping in log height between. Measured from the 100 m floor on
+    Rust: 6 m for the first notch, 1.1 km after 40 notches, and 40 notches back land on the floor again.
+  - **Predictive terrain avoidance (user: the clamp near 150 m was "too instant and direct", jumps and views from
+    underneath).** The floor was an instant clamp on one GPU reading of the ground straight under the camera, a
+    frame late, so a slope arriving under the camera snapped it up and a hillside beside it was never checked.
+    Now the probe samples 24 directions per frame (a 24×1 target, one pixel each): the nadir; two rings of 8 at
+    half and the full floor height out, each allowed its own distance (a 45° cone, so ground beside the camera
+    counts only when it would reach into the cone); and five along the camera's velocity 0.5–3 s ahead, allowed
+    0.4 of the distance less the spring's 0.5 s lag, so distant ground lifts the camera only as steeply as it
+    must. `probeFloor` is the highest sample less its allowance; the controller follows `probeFloor + minAltitude`
+    with a critically damped spring (0.25 s rising, 1 s falling) and keeps the camera above it without raising
+    the target height, so the lift is temporary and the camera settles back after a ridge; the ground straight
+    under the camera stays a hard stop at half the floor height, and only that one raises the target. Wheel zoom
+    starts from the camera's own height when the floor holds it above its target. Measured flying W at ~150 m
+    over the Rust ridge spot (heading 2.4, 180 m/s): nadir-only spent 181 of 487 frames below 75 m, touching the
+    50 m hard stop, with 9 m per-frame steps; with the look-ahead the height stayed 84–219 m, the largest step 4.8 m, vertical
+    speed under 200 m/s throughout. At shift speed (720 m/s): 67 m lowest, 12 m largest step, no hard-stop
+    frames. Test: `.playwright-mcp/flytest.js`.
