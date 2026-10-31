@@ -238,23 +238,35 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
     let late = 0;
 
     if (hasRifts) {
-      // Slightly wiggly troughs.
+      // Fine 3D wiggle shared by every trough (texel-scale ruggedness)...
       const wx = px + 0.012 * n.simplex(px * 9 + 4.4, py * 9, pz * 9);
       const wy = py + 0.012 * n.simplex(px * 9, py * 9 + 8.8, pz * 9);
       const wz = pz + 0.012 * n.simplex(px * 9, py * 9, pz * 9 - 6.6);
       for (let k = 0; k < plan.rifts.length; k++) {
         const r = plan.rifts[k];
-        const dp = wx * r.nx + wy * r.ny + wz * r.nz;
+        const dp0 = wx * r.nx + wy * r.ny + wz * r.nz;
         const minW = (r.kind === 2 ? 2.6 : 1.6) * tex;
         const rw = Math.max(r.w, minW);
-        if (Math.abs(dp) > rw * 2.5) continue;
+        // ...plus a per-trough wander of the axis along the arc, so no two run parallel and none is a ruler line:
+        // a few widths for graben, about one width for canyons and fissures (which are wide already).
+        const wander = r.kind === 1 ? Math.max(rw * 3, 0.012) : rw * 0.9;
+        if (Math.abs(dp0) > rw * 2.5 + wander * 1.6) continue;
         // Along-arc position.
         const tx = r.ny * r.sz - r.nz * r.sy, ty = r.nz * r.sx - r.nx * r.sz, tz = r.nx * r.sy - r.ny * r.sx;
         const along = Math.atan2(wx * tx + wy * ty + wz * tz, wx * r.sx + wy * r.sy + wz * r.sz);
         if (along < -rw * 2 || along > r.len + rw * 2) continue;
-        const taper = smoothstep(-rw, r.len * 0.12, along) * smoothstep(r.len + rw, r.len * 0.85, along);
+        const kk = k * 0.731;
+        const dp = dp0 - wander * (n.simplex(along * 5.5 + kk * 9.1, kk, 0.3) + 0.45 * n.simplex(along * 14 + kk * 3.7, 1.9 - kk, 0.7));
+        if (Math.abs(dp) > rw * 2.5) continue;
+        // Ends pinch out over a quarter of the length instead of stopping blunt; graben are segmented (en echelon
+        // strands with gaps), canyons and fissures only breathe in depth along their length.
+        const taper = smoothstep(-rw, r.len * 0.25, along) * smoothstep(r.len + rw, r.len * 0.75, along);
         if (taper <= 0) continue;
-        const wv = Math.max(minW, rw * (0.75 + 0.5 * (0.5 + 0.5 * n.simplex(along * 7 + k * 3.1, k * 1.7, 0.5))));
+        const segN = 0.5 + 0.5 * n.simplex(along * (r.kind === 1 ? 11 : 6) + kk * 5.3, 2.3 + kk, 1.1);
+        const seg = r.kind === 1 ? smoothstep(0.18, 0.55, segN) : 0.6 + 0.4 * segN;
+        const str = taper * seg;
+        if (str <= 0.001) continue;
+        const wv = Math.max(minW, rw * (0.6 + 0.8 * (0.5 + 0.5 * n.simplex(along * 7 + k * 3.1, k * 1.7, 0.5))) * (0.45 + 0.55 * Math.sqrt(str)));
         const u = Math.abs(dp) / wv;
         // Walls are never steeper than ~1.6 texels across: a sub-texel wall aliases into a staircase rim, a
         // jagged shadow edge and per-texel rock spots along the trough. Narrow troughs become V-shaped instead.
@@ -265,16 +277,19 @@ export function generateTerrainFace(ctx: TerrainContext, face: number): FaceTerr
           const nl = Math.max(1, Math.min(5, Math.floor((wallU * wv) / (2 * tex))));
           const lay = wall * nl;
           wall = (Math.floor(lay) + smoothstep(0.2, 0.8, lay - Math.floor(lay))) / nl;
-          late -= r.depth * taper * wall;
-          late += r.depth * 0.04 * taper * Math.exp(-(((u - 1.3) / 0.3) ** 2));
-          if (u < 1.1 * taper + 0.05 && taper > 0.2) tect = TECT.CANYON;
+          late -= r.depth * str * wall;
+          late += r.depth * 0.04 * str * Math.exp(-(((u - 1.3) / 0.3) ** 2));
+          if (u < 1.1 * str + 0.05 && str > 0.2) tect = TECT.CANYON;
         } else if (r.kind === 1) {
-          late -= r.depth * taper * (1 - smoothstep(1 - wallU, 1.0, u));
-          if (u < 1 && taper > 0.3 && tect < TECT.FOSSAE) tect = TECT.FOSSAE;
+          // Half-graben: one wall steeper than the other, the side alternating per strand.
+          const side = Math.sign(dp) * (n.simplex(along * 3 + kk * 2.9, kk * 0.5, 2.2) > 0 ? 1 : -1);
+          const wu = side > 0 ? Math.min(0.85, wallU * 1.8) : wallU;
+          late -= r.depth * str * (1 - smoothstep(1 - wu, 1.0, u));
+          if (u < 1 && str > 0.35 && tect < TECT.FOSSAE) tect = TECT.FOSSAE;
         } else {
           // Fissure with flanking ridges.
-          late += r.depth * taper * (0.55 * Math.exp(-(((u - 1.2) / 0.45) ** 2)) - Math.exp(-((u / 0.45) ** 2)));
-          if (u < 2 && taper > 0.2) tect = Math.max(tect, TECT.FISSURE);
+          late += r.depth * str * (0.55 * Math.exp(-(((u - 1.2) / 0.45) ** 2)) - Math.exp(-((u / 0.45) ** 2)));
+          if (u < 2 && str > 0.2) tect = Math.max(tect, TECT.FISSURE);
         }
       }
     }

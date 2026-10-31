@@ -625,3 +625,28 @@ Newest entries at the bottom. Times are local.
   - Checked on Rust: the dive stops at 500 m over the probed ground with the rings off, the probe reads the
     coarse surface (801.675 km at the test spot), 27 programs and none failing, rocks and the big blocks draw at
     the floor. Script: `.playwright-mcp/floorcheck.js`.
+- **Straight thin lines (user: "i would take easy on straight (thin) lines, sharp corners of that and so on - it
+  looks 'drawn' or generated").** Two sources, both in the generator (offline; nothing changes at render time,
+  per the user's note that quality should come from preparation and shaders, not runtime cost).
+  - The line the user saw was not relief: a shot of Rust 26508 at 0.4 R with the shadows off still showed a
+    ruler-straight dotted dark line across a mare, the normal / height / AO debug views were clean, and the
+    albedo, wetness and flow views carried it. The flow routing handed every texel's catchment to the single
+    neighbour that discovered it in the priority flood, which on a planar slope or a filled flat threads
+    parallel one-texel chains in one of the eight raster directions; the channel darkening (`flow > 0.45`)
+    and the river wetness blur then drew them as lines. `flowAccumulation` now distributes by multiple flow
+    directions on the filled surface (every lower neighbour, weighted by slope over distance; the discovery
+    parent only where no neighbour is lower), so a smooth slope carries a sheet and only valleys concentrate,
+    and `flowToWetness` fades the flow out over the first metre of ponding depth (sheet flow on filled flats;
+    it reappears at the spill point). The flow debug view is now smooth sheets; the line is gone. Flow stage
+    629 -> 740-990 ms at res 512 in the CLI.
+  - The radial graben (Rust 26508 has 44 of them, 0.2-0.4 deg wide, 25-50 deg long) were exact great-circle
+    segments with a 0.7 deg shared wiggle, constant depth and blunt ends, and the parallel chasma clones were
+    offset copies of the same arc. Now each trough's axis wanders along the arc with its own two-octave noise
+    (a few widths for graben, about one for canyons and fissures, so none runs parallel), the ends pinch out
+    over a quarter of the length, graben are segmented into en-echelon strands with gaps and get one steeper
+    wall per strand (half-graben), and canyons and fissures breathe in depth along their length. The
+    tectonic unit code follows the strand strength, so there is no gravel strip without a trough.
+    Before/after hillshades of the rise at lat 30 lon -102: `scratchpad/lines/shade-{before,after}.png`.
+  - Not changed: the radial rills the erosion droplets cut into the smooth flanks of a rise (a fur of short
+    parallel strokes in a hillshade; fine texture at the render scale), and the crisp polygon edges of the
+    geologic-unit debug view (debug only).
