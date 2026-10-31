@@ -16,7 +16,7 @@ export const U = {
   HIGHLANDS: 0, BASIN_FLOOR: 1, BASIN_RIM: 2, MARE: 3, SHIELD: 4, RISE: 5, FLOWS: 6, CANYON: 7, CHAOS: 8,
   EJECTA: 9, RAYED: 10, DUNES: 11, POLAR_CAP: 12, FROZEN_SEA: 13, SEA: 14, PLAYA: 15, LINEATED_ICE: 16,
   FOSSAE: 17, SMOOTH_PLAINS: 18, LAVA_LAKE: 19, PLUME_DEPOSITS: 20, CRYO_DOME: 21, CRYO_FLOWS: 22, GROOVED: 23,
-  PALIMPSEST: 24, CANTALOUPE: 25, FACULA: 26, BLOCK_MOUNTAIN: 27, FISSURE: 28, DIRTY_ICE: 29, DARK_HALO: 30,
+  PALIMPSEST: 24, CANTALOUPE: 25, FACULA: 26, BLOCK_MOUNTAIN: 27, FISSURE: 28, DIRTY_ICE: 29, DARK_HALO: 30, WIND_STREAK: 31,
 } as const;
 
 export const GEO_UNITS: GeoUnit[] = [
@@ -51,6 +51,7 @@ export const GEO_UNITS: GeoUnit[] = [
   { id: 28, name: 'fissure (tiger stripe)', color: [0.2, 0.45, 0.85] },
   { id: 29, name: 'dark dirty ice', color: [0.42, 0.38, 0.34] },
   { id: 30, name: 'dark-halo crater', color: [0.18, 0.17, 0.2] },
+  { id: 31, name: 'wind streak', color: [0.85, 0.75, 0.6] },
 ];
 
 // ---- archetypes --------------------------------------------------------------------------------------------
@@ -317,6 +318,73 @@ export interface WorldPlan {
   capLat: [number, number];
   capDome: number;
   stripes: boolean;
+  wind: Wind;
+}
+
+/** Prevailing wind: a flow circling an axis near the spin axis, wandering by a low-order domain warp. */
+export interface Wind {
+  axis: [number, number, number];
+  /** Basis across the axis (u, v, axis right-handed) for the longitude about it. */
+  u: [number, number, number];
+  v: [number, number, number];
+  /** Domain-warp amplitude (how far the flow wanders from pure zonal). */
+  warp: number;
+  /** 0 = airless, no wind work at all. */
+  strength: number;
+  /** Majority sign of the wind streaks: +1 bright (dust settles in the lee), -1 dark (dust stripped). */
+  sign: number;
+  seed: number;
+}
+
+export function makeWind(rng: Rng, strength: number): Wind {
+  const tilt = 0.1 + 0.35 * rng.next();
+  const az = rng.next() * Math.PI * 2;
+  const flip = rng.next() < 0.5 ? -1 : 1;
+  const axis: [number, number, number] = [flip * Math.sin(tilt) * Math.cos(az), flip * Math.cos(tilt), flip * Math.sin(tilt) * Math.sin(az)];
+  // u = Y x axis (the tilt keeps it away from the degenerate case), v = axis x u.
+  let ux = axis[2], uy = 0, uz = -axis[0];
+  const l = 1 / Math.hypot(ux, uy, uz);
+  ux *= l; uy *= l; uz *= l;
+  const u: [number, number, number] = [ux, uy, uz];
+  const v: [number, number, number] = [axis[1] * uz - axis[2] * uy, axis[2] * ux - axis[0] * uz, axis[0] * uy - axis[1] * ux];
+  return { axis, u, v, warp: 0.08 + 0.14 * rng.next(), strength, sign: rng.next() < 0.6 ? 1 : -1, seed: rng.int(1000) };
+}
+
+/** The wind-warped point for a direction (unit): the dunes and the wind potential are built on it. */
+export function windWarp(w: Wind, n: Noise3, x: number, y: number, z: number, out: [number, number, number]): [number, number, number] {
+  const k = 1.6, s = w.seed * 0.37;
+  const wx = x + w.warp * n.fbm(x * k + s, y * k, z * k, 2);
+  const wy = y + w.warp * n.fbm(x * k, y * k + s + 7.3, z * k, 2);
+  const wz = z + w.warp * n.fbm(x * k, y * k, z * k + s - 4.1, 2);
+  const l = 1 / Math.hypot(wx, wy, wz);
+  out[0] = wx * l; out[1] = wy * l; out[2] = wz * l;
+  return out;
+}
+
+const _wq: [number, number, number] = [0, 0, 0];
+/** Wind potential: longitude about the wind axis of the warped point. Its tangent gradient is the wind direction. */
+export function windLambda(w: Wind, n: Noise3, x: number, y: number, z: number): number {
+  const q = windWarp(w, n, x, y, z, _wq);
+  return Math.atan2(q[0] * w.v[0] + q[1] * w.v[1] + q[2] * w.v[2], q[0] * w.u[0] + q[1] * w.u[1] + q[2] * w.u[2]);
+}
+
+function wrapPi(a: number): number { return a > Math.PI ? a - 2 * Math.PI : a < -Math.PI ? a + 2 * Math.PI : a; }
+
+/** Wind direction (unit tangent) at a direction: the tangent gradient of the wind potential by central differences. */
+export function windAt(w: Wind, n: Noise3, x: number, y: number, z: number, out: [number, number, number]): [number, number, number] {
+  let tx: number, ty: number, tz: number;
+  if (Math.abs(y) < 0.9) { tx = -z; ty = 0; tz = x; } else { tx = 0; ty = z; tz = -y; }
+  const l = 1 / Math.hypot(tx, ty, tz);
+  tx *= l; ty *= l; tz *= l;
+  const sx = y * tz - z * ty, sy = z * tx - x * tz, sz = x * ty - y * tx;
+  const e = 0.003;
+  const g1 = wrapPi(windLambda(w, n, x + e * tx, y + e * ty, z + e * tz) - windLambda(w, n, x - e * tx, y - e * ty, z - e * tz));
+  const g2 = wrapPi(windLambda(w, n, x + e * sx, y + e * sy, z + e * sz) - windLambda(w, n, x - e * sx, y - e * sy, z - e * sz));
+  let gx = g1 * tx + g2 * sx, gy = g1 * ty + g2 * sy, gz = g1 * tz + g2 * sz;
+  const gl = Math.hypot(gx, gy, gz);
+  if (gl < 1e-9) { gx = tx; gy = ty; gz = tz; } else { gx /= gl; gy /= gl; gz /= gl; }
+  out[0] = gx; out[1] = gy; out[2] = gz;
+  return out;
 }
 
 // ---- helpers ---------------------------------------------------------------------------------------------
@@ -620,6 +688,8 @@ export function planWorld(p: GenParams): WorldPlan {
   const oldN = Math.max(0, totalCraters - youngN + rayCount + faculaCount);
   const rMax = 0.12 * (0.7 + 0.6 * crng.next());
   const rMin = 0.0055;
+  // Prevailing wind (only worlds with enough air to move sand have any).
+  const wind = makeWind(new Rng(p.seed, 30), s.dunes > 0.01 ? Math.min(1.5, s.dunes) : 0);
   // Dark-halo craters: young impacts that dig dark material from under brighter plains (none on ice).
   const darkCount = arch.icy || s.craterDensity < 0.2 ? 0 : Math.round(1 + rayCount * 0.7 * crng.next());
   const oldCraters = makeCraters(crng, oldN, rMin, rMax, Rkm, g, relief, arch.relax, 0, 0, 0, [0.1, 0.9]);
@@ -809,7 +879,7 @@ export function planWorld(p: GenParams): WorldPlan {
     resolved,
     p, archetype, arch, bulk, name, orbitDays, tidal, s, seaMode, seaValue, relief, capK, distortion, figure, gRel, drama, icy: arch.icy,
     dichoAxis, dichoAmp, crustAmp, basins, oldCraters, youngCraters, rises, volcanoes, rifts, scarpList, chaosList,
-    palimpsests, grooves, cantaloupe, capLat, capDome, stripes,
+    palimpsests, grooves, cantaloupe, capLat, capDome, stripes, wind,
   };
 }
 
@@ -847,6 +917,7 @@ export function lookHints(plan: WorldPlan): LookHints {
   return {
     atmoDensity, atmoHeightKm, rayleigh, mie, mieH, rayleighH, layerTints, seaKind: b.seaKind,
     seaDeepColor: seaDeep, seaShallowColor: seaShallow,
+    windAxis: plan.wind.axis, windAniso: plan.wind.strength > 0 ? 0.55 : 0, windStreakSign: plan.wind.strength > 0 ? plan.wind.sign : 0,
   };
 }
 
@@ -863,6 +934,8 @@ export interface SurfaceStats {
   minHeight: number;
   maxHeight: number;
   droplets: number;
+  /** Obstacles that got a wind streak. */
+  streakCount: number;
 }
 
 const fmt = (n: number) => Math.round(n).toLocaleString('en-US');
@@ -922,7 +995,12 @@ export function buildHistory(plan: WorldPlan, st: SurfaceStats): HistoryEvent[] 
   }
   if (st.droplets > 0) ev.push({ gyrAgo: fam === 'volcanic' ? 0.1 : 3.5, stage: fam === 'volcanic' ? 'Lava channels' : 'Outflow floods', text: fam === 'volcanic' ? 'Fast lava rivers cut sinuous channels and fans down the shield flanks.' : 'Catastrophic outflows from the chaos regions carve channels into the lowlands.' });
   if (st.capCoverage > 0.001) ev.push({ gyrAgo: 0.5, stage: 'Polar caps', text: `CO₂ and water frost build layered polar domes ${km(plan.capDome)} thick with spiral troughs, covering ${pct(st.capCoverage)}.` });
-  if (st.duneCoverage > 0.002) ev.push({ gyrAgo: 0.1, stage: 'Wind', text: `Thin winds sweep sand into dune seas over ${pct(st.duneCoverage)} of the surface.` });
+  if (st.duneCoverage > 0.002 || st.streakCount > 0) {
+    const tilt = (Math.acos(Math.min(1, Math.abs(plan.wind.axis[1]))) * 180) / Math.PI;
+    const dunes = st.duneCoverage > 0.002 ? `, sweeping sand into dune seas over ${pct(st.duneCoverage)} of the surface` : '';
+    const streaks = st.streakCount > 0 ? `; ${st.streakCount} ${plan.wind.sign > 0 ? 'bright' : 'dark'} dust streaks trail craters and hills downwind` : '';
+    ev.push({ gyrAgo: 0.1, stage: 'Wind', text: `Thin winds circle an axis ${tilt.toFixed(0)}° off the pole${dunes}${streaks}.` });
+  }
   if (st.playaCoverage > 0.001) ev.push({ gyrAgo: 0.3, stage: 'Deposits', text: plan.archetype === 'sulfur' ? 'Plume fallout paints rings of sulfur and SO₂ frost around the vents.' : plan.icy ? `Geyser and frost deposits brighten ${pct(st.playaCoverage)} of the surface.` : `Closed basins dry out into bright salt flats (${pct(st.playaCoverage)}).` });
   let rayed = 0, fac = 0, dark = 0, sec = 0;
   for (let o = 7; o < plan.youngCraters.length; o += CRATER_STRIDE) {

@@ -8,6 +8,8 @@ uniform sampler2DArray tSplat1;
 uniform sampler2DArray tGrad;
 uniform vec4  uLayerStyle[8];
 uniform float uFinePits;
+uniform vec3  uWindAxis;
+uniform float uWindAniso;
 uniform float uFineDetail;
 
 vec4 fineOctaveStyle(vec4 st, float crackM, float pitM) {
@@ -36,6 +38,7 @@ float fineReliefM(vec3 d, float h) {
   vec4 fineStyle = vec4(0.0);
   for (int i = 0; i < 8; i++) fineStyle += w[i] * uLayerStyle[i];
   fineStyle.w *= uFinePits;
+  float duneAniso = uWindAniso * w[3];
   float slope = length(Gh);
   float flatK = 1.0 - smoothstep(0.08, 0.3, slope);
   float steep = smoothstep(0.3, 0.6, slope);
@@ -70,7 +73,9 @@ float fineReliefM(vec3 d, float h) {
     st.y += st.z * (1.0 - cf);
     st.z *= cf;
     vec3 g;
-    float v = k < 6 ? styleOct(d * (uRadius / s) + float(k) * 17.3, st, g) : styleOctSmooth(d * (uRadius / s) + float(k) * 17.3, st, 0.05, g);
+    vec3 q = d * (uRadius / s) + float(k) * 17.3;
+    q -= duneAniso * dot(q, uWindAxis) * uWindAxis;   // dune trains across the wind, as in terrain.frag.glsl
+    float v = k < 6 ? styleOct(q, st, g) : styleOctSmooth(q, st, 0.05, g);
     sum += a * f * v;
     a *= 0.38;
     s /= DETAIL_STEP;

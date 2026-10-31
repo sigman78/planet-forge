@@ -118,6 +118,8 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
       const flood = aux[idx * 4] / 255;
       const dune = aux[idx * 4 + 1] / 255;
       const playa = aux[idx * 4 + 2] / 255;
+      const streakRaw = aux[idx * 4 + 3];
+      const streak = streakRaw === 0 ? 0 : (streakRaw - 128) / 127;
       const capLat = py >= 0 ? plan.capLat[0] : plan.capLat[1];
       const cap = smoothstep(capLat - 0.02, capLat + 0.04, Math.abs(lat) + 0.03 * n1);
       const lowland = 0.5 - 0.5 * Math.tanh(3 * (px * ax[0] + py * ax[1] + pz * ax[2]));
@@ -176,6 +178,8 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
       if (fam === 'cryovolcanic') w[SALT] += salt * 0.35 * smoothstep(0, 0.5, n2 + 0.2 * edifice);
       // Wind and water.
       if (dune > 0) { w[SAND] += 3 * dune; }
+      if (streak > 0) { w[DUST] += 2 * streak; w[SALT] += 0.9 * streak; }
+      else if (streak < 0) { w[BASALT] += 2.5 * -streak; w[GRAVEL] += 0.6 * -streak; }
       if (playa > 0 && !isSea) w[SALT] += 3 * playa;
       if (fluids && wet[idx] > 0) { w[SAND] += 0.4 * wet[idx]; w[GRAVEL] += 0.4 * wet[idx]; }
       // Slope -> bare rock (crater walls, scarps, canyon walls, volcano flanks).
@@ -216,6 +220,7 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
       else if (chaosV > 128) unit = U.CHAOS;
       else if (chaosV === 100) unit = U.CANTALOUPE;
       else if (dune > 0.5) unit = U.DUNES;
+      else if (Math.abs(streak) > 0.35) unit = U.WIND_STREAK;
       else if (playa > 0.5) unit = arch === 'sulfur' || icy ? U.PLUME_DEPOSITS : U.PLAYA;
       else if (flood > 0.5) unit = U.MARE;
       else if (tect === TECT.FOSSAE) unit = U.FOSSAE;

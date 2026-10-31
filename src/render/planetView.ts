@@ -253,6 +253,8 @@ export class PlanetView {
         uFineDetail: u(1),
         uLayerStyle: u(LAYER_STYLE.map((v) => new THREE.Vector4(...v))),
         uFinePits: u(1),
+        uWindAxis: u(new THREE.Vector3(0, 1, 0)),
+        uWindAniso: u(0),
         uLavaColor: u(new THREE.Color(DEFAULT_LOOK.lavaColor)),
         uLavaGlow: u(0),
         uShadows: u(1),
@@ -440,7 +442,11 @@ export class PlanetView {
     U.uAntiTile.value = look.antiTile;
     U.uWetness.value = look.wetness;
     U.uChannels.value = look.channels;
-    const tints = this.data?.info?.look.layerTints;
+    const hints = this.data?.info?.look;
+    const wa = hints?.windAxis ?? [0, 1, 0];
+    (U.uWindAxis.value as THREE.Vector3).set(wa[0], wa[1], wa[2]);
+    U.uWindAniso.value = hints?.windAniso ?? 0;
+    const tints = hints?.layerTints;
     const tintV = U.uLayerTint.value as THREE.Vector3[];
     tintV.forEach((v, i) => {
       const t = tints?.[i] ?? [1, 1, 1];

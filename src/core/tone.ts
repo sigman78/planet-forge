@@ -52,6 +52,7 @@ const UNIT_TINT: RGB[] = [
   [0.9, 0.92, 0.98],    // 28 fissure
   [0.78, 0.72, 0.66],   // 29 dark dirty ice
   [0.8, 0.79, 0.81],    // 30 dark-halo crater
+  [1.0, 1.0, 1.0],      // 31 wind streak (the splat carries the sign)
 ];
 
 /** Family overrides: the same unit means a different material on an ice shell or a volcanic world. */
@@ -82,6 +83,9 @@ export function tonePalette(planet: PlanetData): { units: RGB[]; seed: number; d
     const j = neutral ? [0, 0, 0] : [(rng.next() - 0.5) * 0.08, (rng.next() - 0.5) * 0.08, (rng.next() - 0.5) * 0.08];
     return [t[0] * b * (1 + j[0]), t[1] * b * (1 + j[1]), t[2] * b * (1 + j[2])] as RGB;
   });
+  // Wind streaks: bright or dark per world (the unit cannot carry the sign).
+  const ws = info?.look?.windStreakSign ?? 0;
+  if (ws > 0) units[31] = [1.14, 1.13, 1.12]; else if (ws < 0) units[31] = [0.8, 0.79, 0.78];
   // Field strengths per world: some worlds are nearly uniform, some strongly two-faced.
   const dichotomy = (fam === 'ice' ? 0.06 : 0.1) * (0.4 + 1.2 * rng.next());
   const regional = 0.05 + 0.05 * rng.next();

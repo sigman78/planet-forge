@@ -692,3 +692,28 @@ Newest entries at the bottom. Times are local.
   points of interest. The extra rng draws per crater move every crater after the first, so a seed's world
   changes. No render-time cost; generation time unchanged (6.6 s at res 512 in node). Shots:
   `.playwright-mcp/cratershots.js` (crater-before/after-*.jpg on grey moon 2), hillshades in the scratchpad.
+- **02:50** **Variance slice 3, winds.** `WorldPlan.wind` (`makeWind`): a flow circling an axis tilted 6-26° off the
+  spin axis (either sense), wandering by a low-order domain warp (`windWarp`, three 2-octave fbm fields,
+  amplitude 0.08-0.22); `windLambda` is the longitude about that axis of the warped point and `windAt` its tangent
+  gradient by central differences, so the dunes and the streaks share one field. Strength = the archetype's
+  dune knob, so only worlds with air to move sand change (Rust always, Sulfur sometimes); grey moon, cinder,
+  the ice worlds are untouched. Dunes (pipeline): the ridged noise is now compressed along the wind axis in the
+  warped domain instead of world Y, so the macro crests follow the meridians of the wind axis and wander with
+  it. That relief is 4 texels apart and ~100 m high, invisible from any normal altitude, so the fine dune relief
+  in the shader follows too: `uWindAxis`/`uWindAniso` (look hints `windAxis`, `windAniso`, 0 for cached planets)
+  squeeze the fine-octave noise domain along the axis by `uWindAniso * sand weight` (terrain.frag.glsl detailGrad
+  fine branch, mirrored in terrain_fine.glsl), gradient corrected by the same projection: one dot product and a
+  fma per octave. At 0 the sand is isotropic crinkle, at 0.55 dune trains, at 2 a smear (duneaniso2-*.jpg).
+  Wind streaks (`stampWindStreaks`, cube stage, aux channel 3 as 128 ± v): tapered plumes 3.5-8 radii long
+  downwind of every obstacle at least 3 texels across (young craters except secondaries, old craters below
+  0.35 wear, rises, volcanoes; the 350 largest), half-width 0.6 R growing 12% per radius with ragged simplex
+  edges and a soft tail, stamped per face through `capBox` around the plume's middle so they cross face edges.
+  One sign per world (60% bright): bright = dust + salt in the splat and a 1.14 tint for unit 31 "wind streak",
+  dark = basalt + gravel and 0.8 (tone.ts reads `look.windStreakSign`; the unit id cannot carry the sign).
+  Rust 26508: 225 obstacles streaked, unit 31 covers 1.3%; a streak's direction matches `windAt` at its crater
+  (2° on a clean one, ~20° where neighbours overlap); dark tails trail the small craters in the render
+  (wind-after-streaks.jpg vs wind-before-streaks.jpg). History: "Thin winds circle an axis N° off the pole,
+  sweeping sand ...; 225 dark dust streaks trail craters and hills downwind." Cost: generation 13.8 → 14.8 s at
+  res 512 in node (warp per dune texel + the stamping); render unchanged. Unit 31 is the last id under
+  `MAX_UNITS = 32`. Deferred: the frost hemisphere on tidally locked bodies (needs a sub-parent direction the
+  plan does not carry; the locked archetypes have no wind anyway).

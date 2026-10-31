@@ -11,6 +11,8 @@ uniform sampler2DArray tOrm;      // ao, roughness, metal
 uniform float uLayerScale[LAYERS];   // tiles per km
 uniform float uFineDetail;           // strength of the sub-mesh detail octaves (0 = off)
 uniform vec4  uLayerStyle[LAYERS];
+uniform vec3 uWindAxis;              // prevailing-wind axis: dune crests run along its meridians
+uniform float uWindAniso;            // how far the fine noise domain is squeezed along it on sand (0 = airless)
 uniform float uFinePits;             // scale of the pitted fine style (low on worlds with an atmosphere)   // fine detail style per layer (ridged, billowy, cracked, pitted)
 uniform sampler2DArray tAO;          // heightmap ambient occlusion (R)
 uniform sampler2DArray tGrad;        // baked height gradient (m per km, world space)
@@ -166,6 +168,7 @@ float gDetailFootprint = 0.0;   // geometric mean of the screen footprint axes (
 // Low-frequency context for the fine relief, set in main before detailGrad.
 float gRegion = 0.0;    // ~30 km region noise (-1..1): crack fields, plate size, roughness jitter
 float gFineAmp = 1.0;   // regional and slope amplitude of the fine octaves
+float gDuneAniso = 0.0; // uWindAniso * sand weight at this pixel
 
 // Fine-octave style per octave (k = 3..7). Cracked plates live only at the two coarsest fine scales and craterlets
 // thin out toward the finest: one style repeated at every scale is what made the ground look like reptile skin.
@@ -204,8 +207,12 @@ vec3 detailGrad(vec3 d, float h, vec4 fineStyle) {
       float cf = 1.0 - smoothstep(0.035, 0.09, gDetailFootprint / s);
       st.y += st.z * (1.0 - cf);
       st.z *= cf;
-      if (k < 6) styleOct(d * (uRadius / s) + float(k) * 17.3, st, g);
-      else styleOctSmooth(d * (uRadius / s) + float(k) * 17.3, st, 0.05, g);
+      // Dune trains: on sand the noise domain is squeezed along the wind axis, so the crests run across the wind.
+      vec3 q = d * (uRadius / s) + float(k) * 17.3;
+      q -= gDuneAniso * dot(q, uWindAxis) * uWindAxis;
+      if (k < 6) styleOct(q, st, g);
+      else styleOctSmooth(q, st, 0.05, g);
+      g -= gDuneAniso * dot(g, uWindAxis) * uWindAxis;
       G += (a * fineM * f / s) * g;
       a *= 0.38;
     }
@@ -290,6 +297,7 @@ void main() {
   vec4 fineStyle = vec4(0.0);
   for (int i = 0; i < LAYERS; i++) fineStyle += w[i] * uLayerStyle[i];
   fineStyle.w *= uFinePits;   // air and wind fill in small craters
+  gDuneAniso = uWindAniso * w[3];
   // Slope (km/km) of the baked relief, and low-frequency region noise for variety.
   float slope = length(Gh);
   float flatK = 1.0 - smoothstep(0.08, 0.3, slope);

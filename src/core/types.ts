@@ -65,6 +65,11 @@ export interface LookHints {
   seaKind: SeaKind;
   seaDeepColor: string; // hex
   seaShallowColor: string; // hex
+  /** Prevailing-wind axis (unit) and how strongly the fine dune relief squeezes along it (0 = airless / cached planets). */
+  windAxis?: [number, number, number];
+  windAniso?: number;
+  /** +1 bright wind streaks, -1 dark, 0 none. */
+  windStreakSign?: number;
 }
 
 export interface PlanetInfo {

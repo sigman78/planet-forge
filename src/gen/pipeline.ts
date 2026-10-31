@@ -12,14 +12,14 @@ import type { FaceCoord, Vec3 } from '../core/cube.ts';
 import type { PlanetData } from '../core/types.ts';
 import { erodeCube, flowAccumulation, flowToWetness } from './erosion.ts';
 import { buildPadMap, faceSlice, texelAreaWeights, weightedQuantiles } from './heightfield.ts';
-import { Noise3, smoothstep } from './noise.ts';
+import { Noise3, Rng, smoothstep } from './noise.ts';
 import { resolveParams } from './params.ts';
 import type { GenParams } from './params.ts';
 import { generateSurfaceFace } from './surface.ts';
 import type { SurfaceFaceOutput } from './surface.ts';
-import { generateTerrainFace, prepareTerrain, VK } from './terrain.ts';
+import { capBox, generateTerrainFace, prepareTerrain, VK } from './terrain.ts';
 import type { FaceTerrain, TerrainContext } from './terrain.ts';
-import { buildInfo, planWorld } from './world.ts';
+import { buildInfo, CRATER_STRIDE, planWorld, windAt, windWarp } from './world.ts';
 import type { SurfaceStats, WorldPlan } from './world.ts';
 
 export type ProgressFn = (stage: string, frac: number) => void;
@@ -118,6 +118,78 @@ function maskCoverage(mask: Uint8Array, N: number, ch: number, areaW: Float32Arr
     for (let y = 1; y <= N; y++)
       for (let x = 1; x <= N; x++) { const w = areaW[y * T + x]; a += w; if (mask[((f * T + y) * T + x) * 4 + ch] > 127) s += w; }
   return s / a;
+}
+
+/**
+ * Wind streaks: tapered plumes downwind of obstacles (fresh craters, rises, volcanoes), bright where dust settles
+ * in the lee or dark where the wind strips it. Written into aux channel 3 as 128 +- v (0 = none). Returns the
+ * number of obstacles that got one.
+ */
+function stampWindStreaks(plan: WorldPlan, N: number, aux: Uint8Array, n: Noise3): number {
+  const T = N + 2;
+  const wind = plan.wind;
+  const rng = new Rng(plan.p.seed, 31);
+  const texel = 1.6 / N;
+  type Ob = { x: number; y: number; z: number; r: number; k: number };
+  const obs: Ob[] = [];
+  const addCraters = (C: Float64Array, maxDeg: number) => {
+    for (let o = 0; o < C.length; o += CRATER_STRIDE) {
+      if (C[o + 7] === 4 || C[o + 8] > maxDeg || C[o + 3] < 3 * texel) continue;
+      obs.push({ x: C[o], y: C[o + 1], z: C[o + 2], r: C[o + 3], k: 1 });
+    }
+  };
+  addCraters(plan.youngCraters, 0.5);
+  addCraters(plan.oldCraters, 0.35);
+  for (const r of plan.rises) obs.push({ x: r.x, y: r.y, z: r.z, r: r.r * 0.5, k: 0.7 });
+  for (const v of plan.volcanoes) obs.push({ x: v.x, y: v.y, z: v.z, r: v.r * 0.6, k: 1 });
+  obs.sort((a, b) => b.r - a.r);
+  if (obs.length > 350) obs.length = 350;
+  const W: Vec3 = [0, 0, 0], d: Vec3 = [0, 0, 0];
+  const box = { x0: 0, x1: 0, y0: 0, y1: 0 };
+  const scale = Math.min(1, wind.strength);
+  let count = 0;
+  for (const ob of obs) {
+    const len = 3.5 + 4.5 * rng.next();
+    const sign = wind.sign;
+    const amp = scale * ob.k * (0.6 + 0.4 * rng.next());
+    windAt(wind, n, ob.x, ob.y, ob.z, W);
+    // Across-wind tangent.
+    const tx = ob.y * W[2] - ob.z * W[1], ty = ob.z * W[0] - ob.x * W[2], tz = ob.x * W[1] - ob.y * W[0];
+    const R = ob.r, L = R * len, fr = 2.5 / R;
+    // Cap around the plume's middle, not the obstacle: the box is a fraction of the one around the obstacle.
+    const mx = ob.x + W[0] * L * 0.5, my = ob.y + W[1] * L * 0.5, mz = ob.z + W[2] * L * 0.5;
+    const ml = 1 / Math.hypot(mx, my, mz);
+    let wrote = false;
+    for (let f = 0; f < 6; f++) {
+      if (!capBox(f, N, mx * ml, my * ml, mz * ml, L * 0.5 + 1.8 * R, box)) continue;
+      for (let y = box.y0; y <= box.y1; y++) {
+        for (let x = box.x0; x <= box.x1; x++) {
+          faceToDir(f, texelToS(x, N), texelToS(y, N), d);
+          const rx = d[0] - ob.x, ry = d[1] - ob.y, rz = d[2] - ob.z;
+          const s = rx * W[0] + ry * W[1] + rz * W[2];
+          if (s < 0.8 * R || s > L) continue;
+          const u = rx * tx + ry * ty + rz * tz;
+          const hw0 = R * (0.6 + 0.12 * (s / R));
+          if (Math.abs(u) > 1.6 * hw0) continue;
+          // Half-width grows slowly downwind; the edges are ragged; the plume fades along a soft tail.
+          const hw = hw0 * (1 + 0.3 * n.simplex(d[0] * fr, d[1] * fr, d[2] * fr));
+          const across = Math.exp((-2.5 * u * u) / (hw * hw));
+          if (across < 0.05) continue;
+          const head = smoothstep(0.8 * R, 1.6 * R, s);
+          const tail = Math.pow(1 - Math.max(0, (s - 1.4 * R) / (L - 1.4 * R)), 1.4);
+          const tex = 0.75 + 0.25 * n.fbm(d[0] * fr * 2.4, d[1] * fr * 2.4, d[2] * fr * 2.4, 2);
+          const v = Math.round(127 * amp * across * head * tail * tex);
+          if (v < 4) continue;
+          const i = ((f * T + y) * T + x) * 4 + 3;
+          const cur = aux[i];
+          const ex = cur === 0 ? 0 : cur - 128;
+          if (v > Math.abs(ex)) { aux[i] = 128 + sign * v; wrote = true; }
+        }
+      }
+    }
+    if (wrote) count++;
+  }
+  return count;
 }
 
 /** Takes ownership of the input arrays. */
@@ -221,6 +293,7 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
     const [qLow, qMid] = weightedQuantiles(h, N, [0.2, 0.5], -Infinity, Infinity, areaW);
     const amp = 120 * plan.s.dunes * plan.relief * plan.gRel;
     const df = N * 0.16;
+    const wind = plan.wind, wa = wind.axis, wq: Vec3 = [0, 0, 0];
     for (let i = 0; i < total; i++) {
       const v = h[i];
       if (v > qMid || (hasSea && v < level + 10)) continue;
@@ -228,8 +301,11 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
       const erg = smoothstep(0.02, 0.22, n.fbm(q[0] * 3.1 + 70.3, q[1] * 3.1 - 1.1, q[2] * 3.1 + 5.5, 3) + 0.15 * (plan.s.dunes - 1))
         * smoothstep(qMid, qLow, v);
       if (erg < 0.02) continue;
-      // Transverse ridges, crests roughly north-south.
-      const r = n.ridged(q[0] * df, q[1] * df * 0.3, q[2] * df, 2, 1.8);
+      // Transverse ridges, crests across the prevailing wind: the ridged noise is compressed along the wind axis in
+      // the wind-warped domain, so the crests follow the meridians of that axis and wander where the flow wanders.
+      windWarp(wind, n, q[0], q[1], q[2], wq);
+      const wd = 0.7 * (wq[0] * wa[0] + wq[1] * wa[1] + wq[2] * wa[2]);
+      const r = n.ridged((wq[0] - wd * wa[0]) * df, (wq[1] - wd * wa[1]) * df, (wq[2] - wd * wa[2]) * df, 2, 1.8);
       h[i] += amp * erg * r;
       aux[i * 4 + 1] = Math.round(255 * smoothstep(0.1, 0.5, erg));
     }
@@ -285,8 +361,9 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
     }
   }
   // Pointwise masks are already consistent in the gutters except where erosion moved heights; refresh the
-  // flood/dune/playa channels' gutters with nearest-texel copies.
-  for (let c = 0; c < 3; c++) refillGuttersNearest(aux, N, 4, c);
+  // flood/dune/playa/streak channels' gutters with nearest-texel copies.
+  const streakCount = plan.wind.strength > 0 ? stampWindStreaks(plan, N, aux, n) : 0;
+  for (let c = 0; c < 4; c++) refillGuttersNearest(aux, N, 4, c);
   timings.flow = now() - t0;
 
   let mn = Infinity, mx = -Infinity;
@@ -302,6 +379,7 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
     minHeight: mn,
     maxHeight: mx,
     droplets: dropCount,
+    streakCount,
   };
   return { height: h, flow: flow01, wet: wet01, aux, stats, timings };
 }

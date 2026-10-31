@@ -29,7 +29,7 @@ leading hemisphere, frost at the poles, dust streaks downwind of craters.
    sharpness, depth/diameter and ejecta extent fall with age so old craters are soft bowls with no rim and
    young ones crisp; secondary chains and clusters around the largest fresh craters; a few crater
    clusters from binary impacts. Bright and dark halo craters as unit ids so the colour map can use them.
-3. **Winds** (generator). A per-world prevailing wind field (zonal bands plus a seeded twist) that orients
+3. **Winds** (done, see below) (generator). A per-world prevailing wind field (zonal bands plus a seeded twist) that orients
    the dunes, streaks dust downwind of craters and rises (bright and dark wind streaks as a unit), and
    decides which hemisphere of a tidally locked body collects frost.
 4. **Archetype flags** (refactor, no visual change). The scattered `archetype === 'x'` checks in
@@ -55,3 +55,8 @@ touches the cube stage ordering.
 - Slice 2, the crater population: a degradation continuum per crater (depth, rim, peak, floor, ejecta and
   outline all follow it; worn craters are soft bowls), secondary chains around the largest fresh craters,
   dark-halo craters as unit 30. Binary-impact clusters were left out.
+- Slice 3, winds: a per-world wind field (tilted axis plus a domain warp) orients the macro dune ridges and,
+  through two uniforms, the shader's fine dune relief on sand; wind streaks (unit 31, bright or dark per world)
+  trail craters, rises and volcanoes. Only worlds with a dune knob have wind. The frost hemisphere of tidally
+  locked bodies was left out (no sub-parent direction in the plan). Unit 31 is the last id under the renderer's
+  `MAX_UNITS = 32`: slices 5 and 6 need that bumped (a one-line change in planetView.ts).
