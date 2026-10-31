@@ -43,8 +43,8 @@ float fineReliefM(vec3 d, float h) {
   float flatK = 1.0 - smoothstep(0.08, 0.3, slope);
   float steep = smoothstep(0.3, 0.6, slope);
   float macro = fbm3(d * 9.0) + 0.5 * fbm3(d * 37.0) * octaveFade(uRadius / 37.0 * 0.25);
-  float region = snoise(d * (uRadius / 30.0) + 11.3);
-  float region2 = 0.7 * snoise(d * (uRadius / 12.0) + 5.1) + 0.3 * snoise(d * (uRadius / 4.0) + 2.7);
+  float region = regionField(d);
+  float region2 = roughnessField(d);
   {
     float cz = fineStyle.z;
     float field = 0.35 + 0.95 * smoothstep(-0.5, 0.6, region + 0.3 * macro);
@@ -54,7 +54,7 @@ float fineReliefM(vec3 d, float h) {
     fineStyle.x += 0.4 * steep;
   }
   fineStyle /= max(fineStyle.x + fineStyle.y + fineStyle.z + fineStyle.w, 1e-4);
-  float fineAmp = (0.15 + 1.1 * smoothstep(-0.35, 0.45, region2)) * (1.0 + 0.4 * steep);
+  float fineAmp = fineAmpOf(region2, steep);
 
   float fineM = (h < 0.0 ? 0.3 : mix(0.5, 1.4, smoothstep(300.0, 5000.0, h))) * uFineDetail * fineAmp;
   float rr = 0.5 + 0.5 * region;

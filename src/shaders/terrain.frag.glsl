@@ -303,8 +303,8 @@ void main() {
   float flatK = 1.0 - smoothstep(0.08, 0.3, slope);
   float steep = smoothstep(0.3, 0.6, slope);
   float macro = fbm3(n * 9.0) + 0.5 * fbm3(n * 37.0) * octaveFade(uRadius / 37.0 * 0.25);
-  gRegion = snoise(n * (uRadius / 30.0) + 11.3);
-  float region2 = 0.7 * snoise(n * (uRadius / 12.0) + 5.1) + 0.3 * snoise(n * (uRadius / 4.0) + 2.7);
+  gRegion = regionField(n);
+  float region2 = roughnessField(n);
   {
     // Crack plates only on flats and only in some regions; on slopes their weight turns into ridged relief
     // (fractured scarps), elsewhere into billowy.
@@ -316,7 +316,7 @@ void main() {
     fineStyle.x += 0.4 * steep;   // scree and gullies on steep flanks
   }
   fineStyle /= max(fineStyle.x + fineStyle.y + fineStyle.z + fineStyle.w, 1e-4);
-  gFineAmp = (0.15 + 1.1 * smoothstep(-0.35, 0.45, region2)) * (1.0 + 0.4 * steep);   // smooth and rough patches
+  gFineAmp = fineAmpOf(region2, steep);   // smooth and rough patches
   {
     vec3 G = detailGrad(n, hM, fineStyle);
     G -= dot(G, Nm) * Nm;

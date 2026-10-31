@@ -717,3 +717,19 @@ Newest entries at the bottom. Times are local.
   res 512 in node (warp per dune texel + the stamping); render unchanged. Unit 31 is the last id under
   `MAX_UNITS = 32`. Deferred: the frost hemisphere on tidally locked bodies (needs a sub-parent direction the
   plan does not carry; the locked archetypes have no wind anyway).
+- **03:05** **Hard-edged rough/smooth squares in the fine relief (reported as "hard break terrain type lines on the
+  edge of cube").** Reproduced on Rust 26508 at 30 km over the +x/+z edge: patches of rough vs smooth fine relief
+  with straight edges parallel to the face edge. Ruled out by shots with one thing changed at a time: cast shadows,
+  data-texture mip level (forced to 0), the octave fades, HQ terrain, and the data itself (height, splat and unit
+  grids under the view are smooth and continuous across the edge). Forcing the regional roughness amplitude
+  constant removed the patches entirely: `region2` was two simplex octaves (0.7 at ~12 km + 0.3 at ~4 km) pushed
+  through `smoothstep(-0.35, 0.45)` into an 8:1 amplitude swing, and the zero-planes of the simplex lattice are
+  straight and axis-aligned, so near a cube edge they project as lines parallel to it (the same field shows softer
+  blobs at a face centre, `rgn-before-centre30.jpg`). Fix in `terrain_common.glsl` (`regionField`,
+  `roughnessField`, `fineAmpOf`, used by `terrain.frag.glsl` and `terrain_fine.glsl`): each octave on its own fixed
+  rotated domain (`RGN_ROT_A/B`), weights 0.6/0.4, band widened to `smoothstep(-0.6, 0.6)`, amplitude 0.3..1.25
+  (about 4:1). Same two `snoise` calls per pixel, plus two constant `mat3` multiplies. The ~30 km crack-field
+  noise uses the same rotation. Before/after at the same views: `rgn-{before,after}-{edge30,centre30,nadir30,
+  close3,moon30}.jpg`; 49 tests pass. Not a face seam: the data at that edge is continuous. Follow-up option
+  (offline, no render cost): bake a blurred roughness field into the unused alpha of the tone texture, which the
+  shader already fetches, and drop the two noise calls.

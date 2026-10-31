@@ -91,6 +91,25 @@ float styleOct(vec3 q, vec4 st, out vec3 g) {
 
 const float LAND_AMP[3] = float[3](0.55, 0.3, 0.15);
 
+// Regional fields for the fine relief, sampled on the sphere direction. Each octave lives on its own rotated
+// domain: the zero-planes of a simplex lattice are straight, and one octave pushed through a narrow threshold drew
+// them as hard-edged rough/smooth squares, lined up with the world axes (so parallel to the cube-face edges).
+const mat3 RGN_ROT_A = mat3(0.6359, 0.7230, -0.2700, -0.5784, 0.6781, 0.4535, 0.5109, -0.1322, 0.8494);
+const mat3 RGN_ROT_B = mat3(0.5936, 0.1509, 0.7905, -0.8011, 0.0175, 0.5983, 0.0765, -0.9884, 0.1312);
+// ~30 km field (-1..1): crack fields, plate size, roughness and tint jitter.
+float regionField(vec3 d) {
+  return snoise(RGN_ROT_A * d * (uRadius / 30.0) + 11.3);
+}
+// ~12 km + 4 km field (-1..1): where the fine octaves are rough and where they are smooth.
+float roughnessField(vec3 d) {
+  return 0.6 * snoise(RGN_ROT_A * d * (uRadius / 12.0) + 5.1) + 0.4 * snoise(RGN_ROT_B * d * (uRadius / 4.0) + 2.7);
+}
+// Fine-octave amplitude from the roughness field: a wide band (no hard break at the lattice zero-planes), about
+// 4:1 between the smoothest and the roughest patches, and more on steep ground.
+float fineAmpOf(float rough, float steep) {
+  return (0.3 + 0.95 * smoothstep(-0.6, 0.6, rough)) * (1.0 + 0.4 * steep);
+}
+
 float landMask(float h) {
   // Sharper in mountains, gentle on plains, faint on the seabed; fade near the coast so the detail
   // does not create spurious islands or lakes.
