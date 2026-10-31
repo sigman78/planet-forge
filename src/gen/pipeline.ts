@@ -266,7 +266,7 @@ export function stageCube(inp: CubeStageInput, p: GenParams, onProgress?: Progre
 
   // --- flow routing, river wetness, closed-basin deposits ---
   const { acc, fill } = flowAccumulation(h, N, pm, hasSea ? 0 : -Infinity);
-  const { flow01, wet01 } = flowToWetness(acc, N, pm);
+  const { flow01, wet01 } = flowToWetness(acc, N, pm, fill);
   // Closed-basin deposits need a carrier: running fluids (playas), frost (icy / cryo) or sulfur plumes.
   const deposits = plan.s.erosion > 0 || plan.icy || plan.archetype === 'sulfur' || plan.arch.family === 'cryovolcanic';
   if (plan.s.salt > 0.01 && deposits) {

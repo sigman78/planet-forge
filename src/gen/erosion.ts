@@ -300,20 +300,56 @@ export function flowAccumulation(H: Float32Array, N: number, padMap?: PadMap, se
     }
   }
 
+  // Accumulation by multiple flow directions on the filled surface: each texel hands its catchment to every
+  // lower neighbour in proportion to the slope towards it, so a smooth slope carries a sheet and only real
+  // valleys concentrate flow. Single-direction routing (each texel to the one neighbour that discovered it)
+  // threaded planar slopes and flats with parallel ruler-straight chains that drew as dark lines. On a flat
+  // (no lower neighbour) the discovery parent still takes the flow, so it reaches the spill point.
   const acc = new Float32Array(total);
   for (let i = 0; i < orderLen; i++) {
     const idx = order[i];
     const rem = idx % TT;
     acc[idx] = area[rem] / areaMean;
   }
+  const invDist = [1, 1, 1, 1, Math.SQRT1_2, Math.SQRT1_2, Math.SQRT1_2, Math.SQRT1_2];
+  const wgt = new Float64Array(8);
   for (let i = orderLen - 1; i >= 0; i--) {
     const idx = order[i];
-    const pa = parent[idx];
-    if (pa >= 0 && H[pa] >= seaLevel) acc[pa] += acc[idx];
+    const a = acc[idx];
+    const L = H[idx] + fill[idx];
+    const f = Math.floor(idx / TT);
+    const rem = idx - f * TT;
+    const y = Math.floor(rem / T);
+    const x = rem - y * T;
+    const slot = (f * W + (y + P - 1)) * W + (x + P - 1);
+    let sum = 0;
+    for (let o = 0; o < 8; o++) {
+      const ni = map[slot + n8[o]];
+      const d = H[ni] < seaLevel ? L - H[ni] : L - (H[ni] + fill[ni]);
+      const w = d > 0 ? d * invDist[o] : 0;
+      wgt[o] = w;
+      sum += w;
+    }
+    if (sum > 0) {
+      const k = a / sum;
+      for (let o = 0; o < 8; o++) {
+        if (wgt[o] <= 0) continue;
+        const ni = map[slot + n8[o]];
+        if (H[ni] >= seaLevel) acc[ni] += wgt[o] * k;
+      }
+    } else {
+      const pa = parent[idx];
+      if (pa >= 0 && H[pa] >= seaLevel) acc[pa] += a;
+    }
   }
   refillGutters(acc, N);
   refillGutters(fill, N);
   return { acc, fill };
+}
+
+function smoothstepF(a: number, b: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
 }
 
 /** Binary min-heap of (float key, int value) with typed-array storage. */
@@ -367,8 +403,14 @@ class MinHeap {
 /**
  * Log-scaled flow (0..1): 0 for a single texel, 1 for a catchment of ~5% of a face.
  * Plus a blurred version used as soil wetness near rivers.
+ *
+ * `fill` (from flowAccumulation) hides the flow across ponded ground: inside a filled depression the routing
+ * has no slope to follow and the priority flood threads the whole catchment through one texel-wide chain,
+ * which drew ruler-straight dark lines across every lava plain and basin floor. Water that reaches such a
+ * flat spreads out as a sheet, so the channel fades in over the first metre of ponding and the flow reappears
+ * only at the spill point, where the ground descends again.
  */
-export function flowToWetness(acc: Float32Array, N: number, padMap?: PadMap): { flow01: Float32Array; wet01: Float32Array } {
+export function flowToWetness(acc: Float32Array, N: number, padMap?: PadMap, fill?: Float32Array): { flow01: Float32Array; wet01: Float32Array } {
   const pm = padMap ?? buildPadMap(N, 4);
   const { T, P, W, map } = pm;
   const ref = Math.log(1 + N * N * 0.05);
@@ -376,6 +418,13 @@ export function flowToWetness(acc: Float32Array, N: number, padMap?: PadMap): { 
   for (let i = 0; i < acc.length; i++) {
     const v = Math.log(1 + Math.max(0, acc[i] - 1)) / ref;
     flow01[i] = v > 1 ? 1 : v;
+  }
+  if (fill) {
+    // Ponding depth is a chain of 1e-4 steps on a true flat and metres in a bowl; both are sheet flow.
+    for (let i = 0; i < acc.length; i++) {
+      const d = fill[i];
+      if (d > 0) flow01[i] *= 1 - smoothstepF(0, 1, d);
+    }
   }
   // Wetness: rivers only (flow above a threshold), widened by a few blur passes across faces.
   let a = new Float32Array(acc.length);
