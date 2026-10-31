@@ -514,3 +514,13 @@ Newest entries at the bottom. Times are local.
     50 m hard stop, with 9 m per-frame steps; with the look-ahead the height stayed 84–219 m, the largest step 4.8 m, vertical
     speed under 200 m/s throughout. At shift speed (720 m/s): 67 m lowest, 12 m largest step, no hard-stop
     frames. Test: `.playwright-mcp/flytest.js`.
+  - **Cheap wins for the user to judge.** (1) Air normalised at sea level: the Rayleigh, Mie and ground-haze
+    densities were referenced to the smoothed figure and anything below it (a shore under a high figure, a basin)
+    was up to 2× denser, which read as fog at 150 m; the figure stays the reference but density below it is now
+    clamped to the nominal surface value, so sea level is never hazier than the figure's own surface (on Rust the
+    figure peaks 44 km over the datum, so its low ground had the full 2×). (2) Fly keys ramp: the speed eases in
+    over 0.25 s and coasts out over 0.2 s along the last direction (measured 0 → 146 m/s in 0.6 s, 146 → 17 m/s
+    in 0.5 s after release) instead of starting and stopping dead. (3) Near plane from the clearance over the
+    probe floor rather than the height over the nadir, so a hillside beside a lifted camera is not clipped.
+    Orbit drag already scales with height (the ground follows the hand) and look drag is angular, so neither
+    needed a change.

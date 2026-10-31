@@ -113,6 +113,9 @@ export class PlanetCameraController {
   /** The eased floor radius (km) the camera keeps above and its rate (km/s); NaN until the first update. */
   private floorR = NaN;
   private floorV = 0;
+  /** Fly keys: the last move direction (world) and how far the speed has ramped toward it (0–1). */
+  private flyDir = new THREE.Vector3();
+  private flyGain = 0;
   /** Camera velocity (km/s) over the last update, for the look-ahead samples. */
   private vel = new THREE.Vector3();
   private prevPos = new THREE.Vector3();
@@ -421,17 +424,27 @@ export class PlanetCameraController {
     const yaw = axis('ArrowRight', 'ArrowLeft');
     const q = this.target.frame;
     if (yaw) turn(q, _q.setFromAxisAngle(upOf(q, _w), -yaw * 1.2 * dt));
-    if (!fwd && !side && !lift) return;
-    // W/S move along the ray under the cursor, so the point being flown at stays under it and grows.
-    const ray = _v.set(this.cursor.x, this.cursor.y, 0.5).unproject(this.camera).sub(this.camera.position).normalize();
     const n = upOf(q, new THREE.Vector3());
-    const move = ray.multiplyScalar(fwd).addScaledVector(rightOf(q, _w), side).addScaledVector(n, lift);
-    if (move.lengthSq() < 1e-12) return;
-    move.normalize();
+    let want = false;
+    if (fwd || side || lift) {
+      // W/S move along the ray under the cursor, so the point being flown at stays under it and grows.
+      const ray = _v.set(this.cursor.x, this.cursor.y, 0.5).unproject(this.camera).sub(this.camera.position).normalize();
+      const move = ray.multiplyScalar(fwd).addScaledVector(rightOf(q, _w), side).addScaledVector(n, lift);
+      if (move.lengthSq() > 1e-12) {
+        this.flyDir.copy(move).normalize();
+        want = true;
+      }
+    }
+    // The speed ramps up over ~0.25 s and coasts out over ~0.2 s along the last direction: no jolt at either end.
+    this.flyGain += ((want ? 1 : 0) - this.flyGain) * (1 - Math.exp(-dt / (want ? 0.25 : 0.2)));
+    if (!want && this.flyGain < 0.01) {
+      this.flyGain = 0;
+      return;
+    }
     // Height above the ground sets the pace: it slows on the way down and the ground clamp stops the fall.
-    const speed = this.flySpeed * Math.min(Math.max(this.groundAlt, this.minAltitude), this.radius) * (shift ? 4 : 1);
+    const speed = this.flySpeed * Math.min(Math.max(this.groundAlt, this.minAltitude), this.radius) * (shift ? 4 : 1) * this.flyGain;
     const r = this.radius + this.target.altitude;
-    const p = n.clone().multiplyScalar(r).addScaledVector(move, speed * dt);
+    const p = n.clone().multiplyScalar(r).addScaledVector(this.flyDir, speed * dt);
     const r1 = p.length();
     turn(q, _q.setFromUnitVectors(n, p.divideScalar(r1)));
     this.target.altitude = THREE.MathUtils.clamp(r1 - this.radius, -this.radius * 0.5, this.maxAltitude);
@@ -472,7 +485,7 @@ export class PlanetCameraController {
       }
     } else {
       if (this.autoRotate) turn(T.frame, _q.setFromAxisAngle(Y, this.autoRotate * dt));
-      if (this.keys.size) this.fly(dt, this.shiftHeld);
+      if (this.keys.size || this.flyGain > 0) this.fly(dt, this.shiftHeld);
       // Inertia: keep drifting after a throw, decaying over about 0.7 s.
       const w = this.spin.length();
       if (!this.dragging && w > 0) {
@@ -533,8 +546,10 @@ export class PlanetCameraController {
     this.hasPrev = true;
     this.camera.quaternion.copy(this.frame).multiply(_q.setFromAxisAngle(_v.set(1, 0, 0), -pitch));
 
-    // Depth range adapted to altitude.
-    const near = THREE.MathUtils.clamp(altAboveGround * 0.25, this.nearFloor, 200);
+    // Depth range adapted to the clearance: the height over the ground or over whatever the probe saw reaching
+    // into the camera's cone, so a hillside beside a lifted camera is not clipped.
+    const clearance = Math.max(r - Math.max(ground, this.probeFloor || -Infinity), this.minAltitude * 0.5);
+    const near = THREE.MathUtils.clamp(clearance * 0.25, this.nearFloor, 200);
     const far = r + this.radius * 1.5 + 200;
     if (Math.abs(this.camera.near - near) > near * 0.05 || this.camera.far !== far) {
       this.camera.near = near;

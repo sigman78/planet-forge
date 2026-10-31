@@ -29,7 +29,8 @@ float figureKm(vec3 dir) {
   return textureLod(tFigure, uv, 0.0).r;
 }
 
-// Altitude above the smoothed figure (km).
+// Altitude above the smoothed figure (km). Below the figure (shores and basins under it) the air is clamped to
+// its nominal surface density rather than thickening, so sea level is never hazier than the figure's surface.
 float atmoAltitude(vec3 p) {
   float r = length(p);
   return r - uPlanetRadius - figureKm(p / r);
@@ -48,10 +49,8 @@ vec2 raySphere(vec3 ro, vec3 rd, float r) {
 // Densities (rayleigh, mie, haze). Haze is a separate thin ground layer: barely visible from orbit
 // (short vertical path) but it thickens toward the horizon when seen from low altitude.
 vec3 atmoDensityAt(vec3 p) {
-  // Altitude above the smoothed figure; basins below it are denser, capped at ~2x so deep basins
-  // do not white out.
-  float h = atmoAltitude(p);
-  vec3 hh = max(vec3(h), -0.7 * vec3(uRayleighH, uMieH, uHazeH));
+  // Nominal (surface) density at and below the figure: basins and shores do not fill up.
+  vec3 hh = vec3(max(atmoAltitude(p), 0.0));
   return vec3(exp(-hh.x / uRayleighH) * uAtmoDensity, exp(-hh.y / uMieH) * uAtmoDensity, exp(-hh.z / uHazeH));
 }
 

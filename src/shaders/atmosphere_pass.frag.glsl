@@ -136,7 +136,7 @@ void main() {
         if (i >= hsteps) break;
         vec3 p = ro + rd * (a0 + (float(i) + dither) * hdt);
         float r = length(p);
-        float hz = max(r - uPlanetRadius - figureKm(p / r), -0.7 * uHazeH);
+        float hz = max(atmoAltitude(p), 0.0);
         float dz = exp(-hz / uHazeH) * hdt;
         hazeOD += dz;
         // Sun through the haze: planet shadow + airmass approximation instead of a nested march.
