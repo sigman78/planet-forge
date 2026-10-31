@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { PlanetData } from '../core/types.ts';
 import { faceToDir, padFaces, texelToS } from '../core/cube.ts';
+import { computeToneMap } from '../core/tone.ts';
 
 /**
  * Gutter (texels per side) of the GPU copies. PlanetData carries 1; the GPU copies are repacked with 8 so
@@ -19,6 +20,8 @@ export interface PlanetTextures {
   ao: THREE.DataArrayTexture;
   /** World-space surface gradient of the height (m per km of arc at the mean radius), RGBA16F, mipmapped. */
   grad: THREE.DataArrayTexture;
+  /** Baked colour map (tone.ts), RGBA8, tone / 2. */
+  tone: THREE.DataArrayTexture;
   dispose(): void;
 }
 
@@ -169,6 +172,7 @@ export function createPlanetTextures(planet: PlanetData, renderer: THREE.WebGLRe
   const aoWide = computeTerrainAO(Pao === G ? heightG : padFaces(planet.height, N, 1, Pao), N, planet.radius, Pao);
   const ao = arrayTex(cropGutter(aoWide, N, 1, Pao, G), T, THREE.RedFormat, THREE.UnsignedByteType, true, aniso);
   const grad = arrayTex(computeHeightGradient(heightG, N, planet.radius, G), T, THREE.RGBAFormat, THREE.HalfFloatType, true, aniso);
+  const tone = arrayTex(computeToneMap(planet, G), T, THREE.RGBAFormat, THREE.UnsignedByteType, true, aniso);
   return {
     N: planet.N,
     height,
@@ -177,7 +181,9 @@ export function createPlanetTextures(planet: PlanetData, renderer: THREE.WebGLRe
     climate,
     ao,
     grad,
+    tone,
     dispose() {
+      tone.dispose();
       ao.dispose();
       grad.dispose();
       height.dispose();

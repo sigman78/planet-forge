@@ -36,6 +36,8 @@ uniform float uTime;
 uniform int   uDebug;
 uniform vec3  uLayerDebugColor[LAYERS];
 uniform vec3  uUnitColors[32];
+uniform sampler2DArray tTone;        // baked per-world colour map (tone.ts), rgb = tone / 2
+uniform float uToneMap;
 
 varying vec3 vDir;
 varying float vElevM;
@@ -445,6 +447,7 @@ void main() {
 
   // --- Macro variation ------------------------------------------------------------------------------
   albedo *= 1.0 + uMacroVar * macro;
+  albedo *= mix(vec3(1.0), textureLod(tTone, tc, dataLod).rgb * 2.0, uToneMap);
   albedo *= mix(vec3(1.0), vec3(0.92, 0.98, 1.06), iceK);   // sea ice: a touch bluer than land ice
   // Weathering: fine dust settles in hollows and on flats, slopes shed it (fresher, brighter scree);
   // a slow regional drift in brightness, and in hue on ice. Ice and salt hollows collect frost, not grey regolith.

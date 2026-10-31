@@ -11,6 +11,7 @@ varying float vRadiusM;
 varying float vLayer;
 varying float vShadow;
 varying float vSeed;
+varying vec3 vUp;
 
 void main() {
   ivec2 b = ivec2((gl_InstanceID % GRID) * 3, gl_InstanceID / GRID);
@@ -43,6 +44,7 @@ void main() {
   vec3 off = ax * q.x + up * (q.y + 0.15) + az * q.z;
   vec3 wp = P + off * r;
   vWorldPos = wp;
+  vUp = up;
   vOffset = off;
   vLocal = q;
   vRadiusM = r * 1000.0;
@@ -57,6 +59,8 @@ void main() {
 uniform sampler2DArray tAlbedo;
 uniform vec3  uLayerTint[LAYERS];
 uniform vec3  uLayerMean[LAYERS];
+uniform sampler2DArray tTone;
+uniform float uToneMap;
 uniform float uRockTile;   // texture tiles per metre on the rocks (real scale)
 uniform float uAmbient;
 uniform vec3  uSkyAmbient;
@@ -70,6 +74,7 @@ varying float vRadiusM;
 varying float vLayer;
 varying float vShadow;
 varying float vSeed;
+varying vec3 vUp;
 
 void main() {
   // Faceted blocks: the flat triangle normal reads as fractured stone. Taken from the rock-relative offset: world
@@ -91,6 +96,7 @@ void main() {
   for (int i = 1; i < LAYERS; i++) if (float(i) == L) { tint = uLayerTint[i]; mean = uLayerMean[i]; }
   // Blocks are fresher than the regolith around them: a little brighter.
   vec3 albedo = tex * tint * (1.0 + 0.4 * vSeed);
+  albedo *= mix(vec3(1.0), textureLod(tTone, cubeTexCoord(vUp, uN), 0.0).rgb * 2.0, uToneMap);
 
   // Contact occlusion: the base of a block sits in its own shadow and in the ground's.
   float occ = mix(0.45, 1.0, smoothstep(-0.3, 0.15, vLocal.y));

@@ -590,6 +590,7 @@ async function main() {
   fSurf.addBinding(look, 'antiTile', { label: 'anti-tiling', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'macroVar', { label: 'macro variation', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'tintStrength', { label: 'world tint', min: 0, max: 1.5, step: 0.01 });
+  fSurf.addBinding(look, 'toneMap', { label: 'colour map', min: 0, max: 1.5, step: 0.01 });
   fSurf.addBinding(look, 'albedoHarmony', { label: 'albedo harmony', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'wetness', { label: 'volatile wetness', min: 0, max: 1, step: 0.01 });
   fSurf.addBinding(look, 'channels', { label: 'channel darkening', min: 0, max: 1, step: 0.01 });

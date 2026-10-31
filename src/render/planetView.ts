@@ -108,6 +108,7 @@ export interface LookParams {
   weathering: number;
   antiTile: number; // 0 = plain tiling, 1 = hex-tiling (no visible repetition)
   tintStrength: number; // 0 = raw textures, 1 = full per-world layer tints from the generator
+  toneMap: number; // strength of the baked per-world colour map (tone.ts): 0 = off, 1 = as baked
   /** 0..1: pulls each layer's brightness toward the world's coverage-weighted mean (softer material edges). */
   albedoHarmony: number;
   wetness: number;
@@ -149,6 +150,7 @@ export const DEFAULT_LOOK: LookParams = {
   weathering: 1,
   antiTile: 1,
   tintStrength: 1,
+  toneMap: 1,
   albedoHarmony: 0.3,
   wetness: 0.5,
   channels: 0.6,
@@ -213,6 +215,7 @@ export class PlanetView {
       tClimate: u<THREE.Texture>(this.placeholder),
       tAO: u<THREE.Texture>(this.placeholder),
       tGrad: u<THREE.Texture>(this.placeholder),
+      tTone: u<THREE.Texture>(this.placeholder),
       uN: u(1),
       uRadius: shared.uPlanetRadius,
       uHeightScale: u(0.001),
@@ -234,6 +237,7 @@ export class PlanetView {
         tNormal: u(layers.normal),
         tOrm: u(layers.orm),
         uLayerScale: u(layers.layers.map(() => 1)),
+        uToneMap: u(1),
         uLayerTint: u(layers.layers.map(() => new THREE.Vector3(1, 1, 1))),
         uLayerMean: u(layers.layers.map((l) => new THREE.Vector3(...(l.meanAlbedo ?? [0.2, 0.2, 0.2])))),
         uLayerNormal: u(layers.layers.map((l) => LAYER_NORMAL_MUL[l.index] ?? 1)),
@@ -380,6 +384,7 @@ export class PlanetView {
     U.tClimate.value = this.tex.climate;
     U.tAO.value = this.tex.ao;
     U.tGrad.value = this.tex.grad;
+    U.tTone.value = this.tex.tone;
     U.uN.value = data.N;
     this.figureM = computeFigureM(data);
     this.coverage = layerCoverage(data);
@@ -430,6 +435,7 @@ export class PlanetView {
     U.uHeightBlend.value = look.heightBlend;
     U.uTriSharp.value = look.triSharp;
     U.uMacroVar.value = look.macroVar;
+    U.uToneMap.value = look.toneMap;
     U.uWeathering.value = look.weathering;
     U.uAntiTile.value = look.antiTile;
     U.uWetness.value = look.wetness;

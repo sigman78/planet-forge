@@ -655,3 +655,22 @@ Newest entries at the bottom. Times are local.
   - Not changed: the radial rills the erosion droplets cut into the smooth flanks of a rise (a fur of short
     parallel strokes in a hillshade; fine texture at the render scale), and the crisp polygon edges of the
     geologic-unit debug view (debug only).
+- **Planet-gen variance, slice 1: baked colour map (user: "give a take on planet gen itself ... more visual
+  (but consistent) variance ... Do it on a branch"; and "i would still try to maintain rendering fps, so the
+  quality/effects here should probably come from offline compute, preparations, maybe improved shaders - not
+  direct runtime impact").** The take is `docs/plan-variance.md` (slices in order, each its own commit, each
+  with no render-time cost). Slice 1: `src/core/tone.ts` bakes a per-world RGBA8 face array when a world
+  loads, from the geologic unit id, latitude and three low-order noise fields through a palette drawn per
+  world: unit tints (maria 0.74 and a little blue, lava flows 0.62, ejecta 1.08, rayed craters 1.2, dunes
+  warm, playas bright, canyon floors 0.86; ice and volcanic families override a few) jittered ±10%
+  brightness and ±4% per channel per world, a hemispheric dichotomy along a random axis (±4-13%, with a
+  red/blue hue tilt), a regional drift (±5-10%) and poleward brightening. The field is padded, box-blurred
+  over N/128 texels per face and cropped to the GPU gutter, so no unit edge becomes a drawn line; shield
+  volcanoes and basin floors are tinted like the plains around them because their footprints are disks and
+  any contrast drew a circle (seen on Rust 26508 and Basalt 3 before the change). Stored as tone / 2 in a
+  mipmapped data texture `tTone`; the terrain and rock shaders multiply the albedo by `tone * 2` with one
+  `textureLod` at the data LOD (the AO fetch already pays that), scaled by a new Look slider "colour map"
+  (`look.toneMap`, 0 = off). Bake: 530 ms at res 512 in node. Cached planets get it without regeneration
+  (the palette seed is a hash of archetype, name and radius). Before/after orbit shots of four worlds:
+  `.playwright-mcp/toneshots.js` (tone-<world>-0/1.jpg). The effect is deliberately moderate; the slider goes
+  to 1.5.
