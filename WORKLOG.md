@@ -733,3 +733,20 @@ Newest entries at the bottom. Times are local.
   close3,moon30}.jpg`; 49 tests pass. Not a face seam: the data at that edge is continuous. Follow-up option
   (offline, no render cost): bake a blurred roughness field into the unused alpha of the tone texture, which the
   shader already fetches, and drop the two noise calls.
+- **03:20** **Mid-distance albedo flatten (found while hunting the user's wall-pixelation report; accepted as its own
+  fix, the report itself is still open).** On the grey moon seed 2 crater rim at 30-80 km the rock and gravel bands
+  read as pixel speckle: a 1 km rock tile spans 20-60 px there, and the texture mips still carry the flake contrast
+  at a few pixels per flake, which the hex blend scatters further. Not the height blend (0 made no difference), not
+  the far window (1.5 same), not the normal map (strength 0 same): it is the albedo itself. Fix in
+  `terrain.frag.glsl`: per layer, `flatK = LAYER_FLAT[layer] * smoothstep(0.014, 0.05, gFootprint * sc)` (tiles per
+  pixel; 0.014 is ~70 px per tile, 0.05 ~20 px) and `ah[k].rgb = mix(ah[k].rgb, uLayerMean[layer], flatK)`.
+  `LAYER_FLAT` = dust 0.35, highland 0.5, basalt 0.8, sand 0.5, rock 1.0, gravel 0.7, ice 0.5, salt 0.5: the
+  high-contrast rock and gravel flatten fully, the fine-grained dust and sand keep most of their grain (an all-layer
+  version killed the dust plain's grain at 10-20 km, `wall-flatafter-w10.jpg`). Up close the texture is untouched,
+  far away it was flat anyway. Cost: one smoothstep and one mix per picked layer per pixel. Shots at the rim, lit,
+  pitch -0.9, 10/30/50/80 km: `wall-{flatbefore,flatafter2}-{w10,w30,w50,w80}.jpg` plus 480 px centre crops
+  `-crop.png`. 49 tests pass. The user's actual complaint (pixelated splat borders along sharp canyons and walls at
+  medium altitude, blurred lower and invisible higher) is not reproduced yet and is deferred; the candidates are the
+  per-texel slope-driven rock weight (`rk` in `surface.ts`, 12 degree band after the 3x3 blur) following a
+  one-texel-wide wall as a bilinear staircase, or unit boundaries at texel scale (the unit debug view at 400 km shows
+  jagged texel steps). Needs a seed and a location from the user.

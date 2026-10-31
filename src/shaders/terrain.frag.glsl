@@ -19,6 +19,9 @@ uniform sampler2DArray tGrad;        // baked height gradient (m per km, world s
 uniform float uTerrainAO;            // heightmap AO strength
 uniform vec3  uLayerTint[LAYERS];
 uniform vec3  uLayerMean[LAYERS];    // mean linear albedo of each texture (settled dust colour)
+// How far each layer's albedo flattens to its mean at mid distance: the high-contrast rock and gravel fully, the
+// fine-grained dust and sand mostly keep their grain.
+const float LAYER_FLAT[LAYERS] = float[LAYERS](0.35, 0.5, 0.8, 0.5, 1.0, 0.7, 0.5, 0.5);
 uniform float uLayerNormal[LAYERS];  // per-layer texture normal strength (crack textures are toned down)
 uniform float uWeathering;           // dust settling, scree, regional jitter (0 = off)
 uniform float uNormalStrength;
@@ -379,6 +382,11 @@ void main() {
     if (bw.x > 0.02) ah[k] += bw.x * triAlbedo(hX, uvX, gXx, gXy, sc, L, hwX[k]);
     if (bw.y > 0.02) ah[k] += bw.y * triAlbedo(hY, uvY, gYx, gYy, sc, L, hwY[k]);
     if (bw.z > 0.02) ah[k] += bw.z * triAlbedo(hZ, uvZ, gZx, gZy, sc, L, hwZ[k]);
+    // Mid-distance flatten: once a texture tile spans fewer than ~60 px the mips still carry the texture's own
+    // flake contrast at a few pixels per flake, which reads as pixel speckle (rock bands along crater walls and
+    // scarps). Pull the albedo toward the layer's mean; up close the texture is untouched, far away it is flat anyway.
+    float flatK = LAYER_FLAT[idx[k]] * smoothstep(0.014, 0.05, gFootprint * sc);
+    ah[k].rgb = mix(ah[k].rgb, uLayerMean[idx[k]], flatK);
   }
 
   // Height-based blend.
