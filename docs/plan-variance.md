@@ -17,7 +17,7 @@ leading hemisphere, frost at the poles, dust streaks downwind of craters.
 
 ## Slices, in order
 
-1. **Baked colour map** (renderer, cache-safe). A per-world RGBA8 data texture `tTone` computed on the CPU
+1. **Baked colour map** (done, see below) (renderer, cache-safe). A per-world RGBA8 data texture `tTone` computed on the CPU
    at load from what the data already carries: the geologic unit id, height, latitude and a few low-order
    noise fields, through a palette drawn per world from the archetype's gamut. Unit tints (maria darker
    and bluer than highlands, ejecta and rays brighter, dune fields warmer, canyon floors darker, lava
@@ -50,3 +50,5 @@ touches the cube stage ordering.
   (single-direction routing); now multiple flow directions on the filled surface, channels as the excess
   over the local sheet, no flow across ponded ground. Rift troughs wander, pinch out, and split into
   en-echelon strands.
+- Slice 1, the baked colour map (`src/core/tone.ts`, Look slider "colour map"). Bake ~530 ms at res 512 on
+  load; ice worlds barely change (their units are neutral); wild worlds take the rocky palette for now.
