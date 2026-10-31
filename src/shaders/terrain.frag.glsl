@@ -470,7 +470,10 @@ void main() {
   vec3 sunCol = sunLightAt(vWorldPos);
   // Keep normal-mapped light from leaking past the terminator.
   float horizon = smoothstep(-0.02, 0.06, dot(n, Lsun));
-  float shadow = dot(n, Lsun) > -0.05 ? terrainShadow(n, Lsun) : 0.0;
+  // The near map compares against the drawn triangle's plane, so it takes the geometric normal, not the shading one.
+  vec3 Ng = normalize(cross(dpdx, dpdy));
+  if (dot(Ng, n) < 0.0) Ng = -Ng;
+  float shadow = dot(n, Lsun) > -0.05 ? min(terrainShadow(n, Lsun), nearShadow(vWorldPos, Ng)) : 0.0;
   // Micro-shadowing from the texture AO (cheap stand-in for self-shadowing of the small relief).
   float NoL = dot(N, Lsun);
   float micro = clamp(abs(NoL) + 2.0 * ao * ao - 1.0, 0.0, 1.0);
@@ -516,6 +519,8 @@ void main() {
     col = faceCol[int(stf.z)] * (0.6 + 0.4 * step(0.45, max(g.x, g.y)));
   }
   else if (uDebug == 10) col = vec3(ao * terrAO * shadow);
+  else if (uDebug == 12) col = nearShadowDbg(vWorldPos);
+  else if (uDebug == 13) col = vec3(nearShadow(vWorldPos, N));
   else if (uDebug == 11) {
     // HQ levels: grey = coarse mesh, then a hue per ring level.
     float lv = uHQLevel;

@@ -3,6 +3,9 @@
 #define GRID 96
 uniform sampler2D tRock;
 uniform float uReach;
+uniform vec3 uViewPos;
+uniform mat4 uNearShadowVP;
+uniform float uNearShadow;
 
 varying vec2 vQuad;        // x across, y along the shadow (0 at the rock, 1 at the tip)
 varying float vStrength;
@@ -14,8 +17,8 @@ void main() {
   vec4 t2 = texelFetch(tRock, b + ivec2(2, 0), 0);
   vec3 P = t0.xyz;
   float r = t0.w;
-  float px = r / max(length(cameraPosition - P) * uPixelAngle, 1e-9);
-  float reach = acos(clamp(dot(normalize(P), normalize(cameraPosition)), -1.0, 1.0)) * uRadius / uReach;
+  float px = r / max(length(uViewPos - P) * uPixelAngle, 1e-9);
+  float reach = acos(clamp(dot(normalize(P), normalize(uViewPos)), -1.0, 1.0)) * uRadius / uReach;
   r *= smoothstep(0.8, 2.0, px) * (1.0 - smoothstep(0.7, 1.0, reach));
   vec3 up = normalize(t1.xyz);
   float sunUp = dot(uSunDir, up);
@@ -35,6 +38,11 @@ void main() {
   vec3 wp = P + across * q.x * r * 1.05 - Lt * (along * len - 0.45 * r) + up * (0.03 * r);
   vQuad = vec2(q.x, along);
   vStrength = sh * smoothstep(0.02, 0.12, sunUp) * clamp(dot(normalize(P), uSunDir) * 8.0, 0.0, 1.0);
+  // Inside the near shadow map the block's real shadow is drawn; the decal stands down there.
+  vec4 sc = uNearShadowVP * vec4(P, 1.0);
+  vec2 suv = sc.xy / sc.w * 0.5 + 0.5;
+  vec2 sm = min(suv, 1.0 - suv);
+  vStrength *= 1.0 - 0.5 * uNearShadow * smoothstep(0.0, 0.04, min(sm.x, sm.y));
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
 

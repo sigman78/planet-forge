@@ -3,6 +3,8 @@ import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { dirToFace, faceST, faceToDir } from '../core/cube.ts';
 import { COMMON, splitShader, type PlanetView } from './planetView.ts';
+import { depthMaterial } from './nearShadow.ts';
+import { fullScreenTriangle } from './hqTerrain.ts';
 import terrainCommon from '../shaders/terrain_common.glsl?raw';
 import terrainLight from '../shaders/terrain_light.glsl?raw';
 import terrainFine from '../shaders/terrain_fine.glsl?raw';
@@ -29,12 +31,15 @@ interface RockLevel {
   clusterKm: number;
 }
 
-// A block of radius r stays above ~2 px out to about r * 1000 (45 deg fov at ~850 px). Each level's window
-// (GRID cells across, centred on the nadir) reaches GRID / 2 cells from the camera: cell ~ 20 r.
+// A block of radius r is 2 px at about 540 r (45 deg fov at ~850 px). Each level's window (GRID cells across,
+// centred on the nadir) reaches GRID / 2 cells from the camera, and its largest block must be under 2 px by
+// then (rMax <= reach / 540, i.e. cell >= 8.5 rMax), or blocks visibly grow in at the window's edge as the
+// camera moves. The level itself comes on at that same height, so it also arrives under 2 px. Nothing under
+// 3 m: with the camera floored at 500 m such pebbles are specks, and a level of them cost as much as the rest.
 const LEVELS: RockLevel[] = [
-  { cellKm: 0.03, rMin: 0.002, rMax: 0.008, maxAlt: 3, density: 0.9, clusterKm: 0.8 },
-  { cellKm: 0.12, rMin: 0.006, rMax: 0.025, maxAlt: 9, density: 0.7, clusterKm: 3 },
-  { cellKm: 0.45, rMin: 0.02, rMax: 0.08, maxAlt: 30, density: 0.45, clusterKm: 10 },
+  { cellKm: 0.06, rMin: 0.003, rMax: 0.0053, maxAlt: 2.9, density: 0.8, clusterKm: 1.5 },
+  { cellKm: 0.24, rMin: 0.0053, rMax: 0.021, maxAlt: 11.5, density: 0.5, clusterKm: 6 },
+  { cellKm: 0.9, rMin: 0.021, rMax: 0.08, maxAlt: 43, density: 0.35, clusterKm: 20 },
 ];
 
 // Blocks per layer: dust, highland, basalt, sand, rock, gravel, ice, salt.
@@ -65,6 +70,8 @@ class Level {
   readonly quad: FullScreenQuad;
   readonly mesh: THREE.Mesh;
   readonly shadow: THREE.Mesh;
+  /** The blocks drawn from the sun into the near shadow map. */
+  readonly depth: THREE.Mesh;
   private cellS = 0;
   /** What the last placement pass was run for; the pass is skipped while nothing in it changes. */
   private placedKey = '';
@@ -119,6 +126,8 @@ class Level {
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 0.6;
+    this.depth = new THREE.Mesh(geo, depthMaterial(mat, mat.vertexShader));
+    this.depth.frustumCulled = false;
     // Shadow decals multiply the lit ground (dst *= src) after the terrain and before the rocks.
     const [svs, sfs] = splitShader(shadowGlsl);
     const smat = new THREE.ShaderMaterial({
@@ -149,7 +158,7 @@ class Level {
    */
   update(renderer: THREE.WebGLRenderer, view: PlanetView, camera: THREE.PerspectiveCamera, groundAlt: number, density: number) {
     const on = density > 0 && groundAlt < this.cfg.maxAlt && view.data !== null;
-    this.mesh.visible = this.shadow.visible = on;
+    this.mesh.visible = this.shadow.visible = this.depth.visible = on;
     if (!on) return;
     const R = view.shared.uPlanetRadius.value;
     this.cellS = 2 / Math.round((R * Math.PI * 0.5) / this.cfg.cellKm);
@@ -205,6 +214,7 @@ class Level {
     this.quad.dispose();
     (this.mesh.material as THREE.Material).dispose();
     (this.shadow.material as THREE.Material).dispose();
+    (this.depth.material as THREE.Material).dispose();
     this.geo.dispose();
     this.quadGeo.dispose();
   }
@@ -218,18 +228,39 @@ class Level {
  */
 export class Rocks {
   readonly group = new THREE.Group();
+  /** Depth-only blocks for the near shadow map; shown only while that renders. */
+  readonly shadowGroup = new THREE.Group();
   private levels: Level[];
   private geo = rockGeometry();
   private quad = instanced(new THREE.PlaneGeometry(2, 2));
 
   constructor(private view: PlanetView) {
     this.levels = LEVELS.map((cfg, i) => new Level(cfg, i, view, this.geo, this.quad));
-    for (const l of this.levels) this.group.add(l.shadow, l.mesh);
+    for (const l of this.levels) {
+      this.group.add(l.shadow, l.mesh);
+      this.shadowGroup.add(l.depth);
+    }
+    this.shadowGroup.visible = false;
+    this.group.add(this.shadowGroup);
   }
 
   update(renderer: THREE.WebGLRenderer, camera: THREE.PerspectiveCamera, groundAlt: number, density: number, debug: number) {
     const d = debug === 0 ? density : 0;
     for (const l of this.levels) l.update(renderer, this.view, camera, groundAlt, d);
+  }
+
+  /**
+   * Throwaway meshes carrying every material a rock level uses (placement, blocks, shadow decal, depth), for
+   * compiling their programs ahead of the first descent (see `warmPrograms` in main.ts). The levels share them.
+   */
+  programObjects(): THREE.Object3D[] {
+    const l = this.levels[0];
+    return [
+      new THREE.Mesh(fullScreenTriangle(), l.place),
+      new THREE.Mesh(this.geo, l.mesh.material),
+      new THREE.Mesh(this.quad, l.shadow.material),
+      new THREE.Mesh(this.geo, l.depth.material),
+    ];
   }
 
   dispose() {

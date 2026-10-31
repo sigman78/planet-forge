@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { dirToFace, faceST, faceToDir } from '../core/cube.ts';
 import { COMMON, HQ_LEVELS, type PlanetView } from './planetView.ts';
+import { depthMaterial, NEAR_SHADOW_LEVELS } from './nearShadow.ts';
 import terrainCommon from '../shaders/terrain_common.glsl?raw';
 import terrainLight from '../shaders/terrain_light.glsl?raw';
 import terrainFrag from '../shaders/terrain.frag.glsl?raw';
@@ -85,6 +86,10 @@ function makeGrid(n: number): RingGrid {
 
 interface Ring {
   mesh: THREE.Mesh;
+  /** The same ring with every block, drawn from the sun into the near shadow map. */
+  shadowMesh: THREE.Mesh;
+  shadowIndex: THREE.BufferAttribute;
+  shadowKey: string;
   U: Record<string, THREE.IUniform>;
   index: THREE.BufferAttribute;
   /** Grid, chunk set, hole variant and visible blocks the index was last built for. */
@@ -96,6 +101,13 @@ interface Ring {
  * by the same height function as the coarse mesh (and the fragment normals). Coarse vertices inside the rings sink
  * below them (uHQSink), so the depth test drops those triangles before shading.
  */
+/** A full-screen triangle like three's FullScreenQuad uses (position and uv, no normal: the normal attribute changes the program). */
+export function fullScreenTriangle() {
+  return new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3))
+    .setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 2, 0, 0, 2], 2));
+}
+
 export class HQTerrain {
   readonly group = new THREE.Group();
   private rings: Ring[] = [];
@@ -120,6 +132,10 @@ export class HQTerrain {
   activeLevels = 0;
   /** Cap on the levels drawn. */
   maxLevels = HQ_MAX_LEVELS;
+  /** Depth-only copies of the finest rings for the near shadow map; shown only while that renders. */
+  readonly shadowGroup = new THREE.Group();
+  /** Side (km) of the outermost ring in the shadow group, 0 when none. */
+  shadowExtentKm = 0;
   /**
    * Surface radius (km) the rings draw under the camera (the first probe direction), read back from the GPU
    * about a frame late; NaN while the rings are off or no reading has arrived yet.
@@ -176,8 +192,20 @@ export class HQTerrain {
       mesh.renderOrder = -1 - k * 0.01;
       mesh.visible = false;
       this.group.add(mesh);
-      this.rings.push({ mesh, U, index, key: '' });
+      const sgeo = new THREE.BufferGeometry();
+      const shadowIndex = new THREE.BufferAttribute(new Uint16Array(maxN * maxN * 6), 1);
+      shadowIndex.setUsage(THREE.DynamicDrawUsage);
+      sgeo.setIndex(shadowIndex);
+      sgeo.setDrawRange(0, 0);
+      sgeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
+      const shadowMesh = new THREE.Mesh(sgeo, depthMaterial(mat, mat.vertexShader));
+      shadowMesh.frustumCulled = false;
+      shadowMesh.visible = false;
+      this.shadowGroup.add(shadowMesh);
+      this.rings.push({ mesh, shadowMesh, shadowIndex, shadowKey: '', U, index, key: '' });
     }
+    this.shadowGroup.visible = false;
+    this.group.add(this.shadowGroup);
     this.setCells(HQ_RING_CELLS[0]);
   }
 
@@ -202,16 +230,20 @@ export class HQTerrain {
     this.cornerFar = new Float32Array((g.blocks + 1) * (g.blocks + 1));
     for (const r of this.rings) {
       r.mesh.geometry.setAttribute('position', g.pos);
-      r.key = '';
+      r.shadowMesh.geometry.setAttribute('position', g.pos);
+      r.key = r.shadowKey = '';
     }
   }
 
-  /** Program for the rings, so the first toggle does not stall on the (large) terrain shader. */
-  compile(renderer: THREE.WebGLRenderer, camera: THREE.Camera, scene: THREE.Scene) {
-    const vis = this.rings[0].mesh.visible;
-    this.rings[0].mesh.visible = true;
-    renderer.compileAsync(scene, camera).catch(() => {});
-    this.rings[0].mesh.visible = vis;
+  /**
+   * Throwaway meshes carrying every material the rings use (ring, ring depth, probe), for compiling their
+   * programs ahead of the first descent (see `warmPrograms` in main.ts). All ring levels share one program.
+   */
+  programObjects(rings: boolean): THREE.Object3D[] {
+    const r = this.rings[0];
+    const probe = new THREE.Mesh(fullScreenTriangle(), this.probeMat);
+    if (!rings) return [probe];
+    return [new THREE.Mesh(r.mesh.geometry, r.mesh.material), new THREE.Mesh(r.shadowMesh.geometry, r.shadowMesh.material), probe];
   }
 
   /**
@@ -288,6 +320,9 @@ export class HQTerrain {
     }
     this.prepareCull(camera, groundAltKm);
     this.drawnBlocks = 0;
+    const k0 = Math.max(1, K - NEAR_SHADOW_LEVELS + 1);
+    this.shadowExtentKm = N * (spacingKm / 2 ** k0);
+    for (let k = 1; k <= HQ_MAX_LEVELS; k++) this.rings[k - 1].shadowMesh.visible = k >= k0 && k <= K;
     for (let k = 1; k <= K; k++) {
       let variant = FULL;
       const [ox, oy] = origins[k - 1];
@@ -299,7 +334,26 @@ export class HQTerrain {
       // Outer ring: ring cells (ox + i) lie in coarse cells (ox + i) >> 1, and ox is even.
       const set = k === 1 ? 1 + ((((ox + oy) / 2) % 2) + 2) % 2 : 0;
       this.buildIndex(this.rings[k - 1], set, variant, ox, oy, 2 / segments / 2 ** k);
+      if (k >= k0) this.buildShadowIndex(this.rings[k - 1], set, variant);
     }
+  }
+
+  /** The shadow copy of a ring draws every block (the sun sees what the camera does not). */
+  private buildShadowIndex(ring: Ring, set: number, variant: number) {
+    const g = this.grid, chunks = g.chunks[set][variant];
+    const key = g.n + ':' + set + ':' + variant;
+    if (key === ring.shadowKey) return;
+    ring.shadowKey = key;
+    const arr = ring.shadowIndex.array as Uint16Array;
+    let count = 0;
+    for (const ch of chunks) {
+      arr.set(ch, count);
+      count += ch.length;
+    }
+    ring.shadowIndex.clearUpdateRanges();
+    ring.shadowIndex.addUpdateRange(0, count);
+    ring.shadowIndex.needsUpdate = true;
+    ring.shadowMesh.geometry.setDrawRange(0, count);
   }
 
   /** Frustum and ground for this frame's block culling. */
@@ -372,27 +426,38 @@ export class HQTerrain {
 
   private off() {
     this.activeLevels = 0;
+    this.shadowExtentKm = 0;
     this.view.terrainMat.uniforms.uHQOn.value = 0;
     this.view.terrainMat.uniforms.uHQK.value = 0;
-    for (const r of this.rings) r.mesh.visible = false;
+    for (const r of this.rings) r.mesh.visible = r.shadowMesh.visible = false;
+  }
+
+  /** Forget the probe's readings (and any in flight): the surface under the camera is no longer the one probed. */
+  private resetProbe() {
     if (!Number.isNaN(this.probeRadius) || this.probeBusy) this.probeGen++;
     this.probeRadius = this.probeFloor = NaN;
   }
 
   /**
-   * Ask the GPU for the ring surface under the first `count` of `dirs` (one pixel each, read back asynchronously).
-   * The first direction is the camera's nadir (`probeRadius`); `probeFloor` is the highest radius over all of
-   * them after each one's `allow` (km) is taken off.
+   * Ask the GPU for the drawn surface under the first `count` of `dirs` (one pixel each, read back
+   * asynchronously): the rings' surface while they are on, otherwise the coarse mesh's (the relief at its
+   * vertex footprint, `coarseFpKm`). The first direction is the camera's nadir (`probeRadius`); `probeFloor` is
+   * the highest radius over all of them after each one's `allow` (km) is taken off. Not `enabled` (no world
+   * drawn) forgets the readings.
    */
-  probe(renderer: THREE.WebGLRenderer, dirs: THREE.Vector3[], allow: ArrayLike<number>, count: number) {
+  probe(renderer: THREE.WebGLRenderer, dirs: THREE.Vector3[], allow: ArrayLike<number>, count: number, enabled: boolean, coarseFpKm: number) {
     const n = Math.min(count, dirs.length, PROBE_N);
-    if (this.activeLevels === 0 || this.probeBusy || n === 0) return;
+    if (!enabled) {
+      this.resetProbe();
+      return;
+    }
+    if (this.probeBusy || n === 0) return;
     const U = this.probeMat.uniforms;
     const ud = U.uProbeDir.value as THREE.Vector3[];
     for (let i = 0; i < PROBE_N; i++) ud[i].copy(dirs[Math.min(i, n - 1)]);
     for (let i = 0; i < n; i++) this.probeAllow[i] = allow[i];
     this.probeCount = n;
-    U.uProbeFp.value = this.finestFp;
+    U.uProbeFp.value = this.activeLevels > 0 ? this.finestFp : coarseFpKm;
     const prev = renderer.getRenderTarget();
     renderer.setRenderTarget(this.probeRT);
     this.probeQuad.render(renderer);
@@ -402,7 +467,7 @@ export class HQTerrain {
     renderer
       .readRenderTargetPixelsAsync(this.probeRT, 0, 0, PROBE_N, 1, this.probeBuf)
       .then(() => {
-        if (gen !== this.probeGen || this.activeLevels === 0 || !Number.isFinite(this.probeBuf[0])) return;
+        if (gen !== this.probeGen || !Number.isFinite(this.probeBuf[0])) return;
         this.probeRadius = this.probeBuf[0];
         let floor = -Infinity;
         for (let i = 0; i < this.probeCount; i++) {
@@ -424,6 +489,8 @@ export class HQTerrain {
     for (const r of this.rings) {
       r.mesh.geometry.dispose();
       (r.mesh.material as THREE.Material).dispose();
+      r.shadowMesh.geometry.dispose();
+      (r.shadowMesh.material as THREE.Material).dispose();
     }
   }
 }

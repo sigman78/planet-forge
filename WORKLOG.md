@@ -524,3 +524,87 @@ Newest entries at the bottom. Times are local.
     probe floor rather than the height over the nadir, so a hillside beside a lifted camera is not clipped.
     Orbit drag already scales with height (the ground follows the hand) and look drag is angular, so neither
     needed a change.
+- **Close terrain shadows (user: "Lets try close terrain shadows and clouds").**
+  - **Near shadow map (`nearShadow.ts`, `nearShadow()` in `terrain_light.glsl`).** The baked march in
+    `terrainShadow` only knows the 512-texel heightmap (2.4 km per texel on Rust), so nothing closer than a
+    mountain cast a shadow. A screen-space march was considered and dropped: it can only shadow with what is on
+    screen, so a rim behind the camera or off the frame casts nothing. Instead the finest six HQ ring levels and
+    the rock instances are rendered from the sun into a 2048² orthographic depth map (reversed-Z, fitted to the
+    ground disc the rings cover: 3.3 km across at 100 m up, 2.7 m per texel; 13 km and 11 m at 900 m), and every
+    terrain and rock fragment compares against it (3×3 PCF), taking the minimum with the baked shadow. Off below
+    a 1° sun, fading in to 6°; the rock decal shadows stand down to half inside the map. The depth meshes reuse
+    the ring and rock vertex programs with a depth-only material (`depthMaterial`), so the map holds exactly the
+    triangles that are drawn (rocks read the viewing camera through `uViewPos`, since `cameraPosition` is the
+    sun's while the map renders). Cost: 0.6 ms for the map at the 100 m ridge spot (9 draws, 2.2 M triangles);
+    the sampling is within the frame-time noise.
+  - **Why the first version shadowed nothing.** A 1.5-texel normal offset lifted every receiver 4 m along its
+    normal, over every boulder and crease the map could resolve, and a 1.5-texel depth bias on top; the map was
+    right (checked by reading it back: the ground point's stored depth matched its projected 0.321). Now there is
+    no normal offset: each PCF tap compares against the receiver's own triangle plane carried to that texel
+    (receiver-plane depth bias from the geometric normal, `dFdx`/`dFdy` of the world position, with the map's
+    per-texel world axes `uNearShadowU/V`), plus a bias that grows with the sun's grazing angle to cover the
+    crease between neighbouring facets (0.5 + 0.6·tan θ texels, capped at 8). At a 25° sun the ridge spot shows
+    the ridge's shadow and boulders' shadows; at 8° the terrain shadows are long and the edge is a staircase
+    (one texel row is 19 m of ground along the sun) and sub-texel rocks lose theirs to the bias; at 10° from 900
+    m the ridges cast with a comb edge on the slopes nearly parallel to the sun, hidden by their own N·L. Scripts:
+    `.playwright-mcp/park.js` (reload and park), `nsshots.js` (sun at a local elevation/azimuth, off/on/debug
+    13 shots), `nsdebug.js` (also overlays the depth map). Debug views 12 (map depth, receiver depth, in-map)
+    and 13 (near shadow term) were added to the terrain shader.
+  - **Verdict and the clouds.** The user's test: the contact shadows are almost invisible, moiré at the closest
+    range, and wrong near the terminator. They stay in the tree but off by default (`state.nearShadows`,
+    Light tab "near shadows") until the close-range acne and the grazing-sun edges are fixed; the likely fix
+    is a second, finer cascade for the first ring levels and a bias that follows the facet size rather than
+    the map texel. A volumetric cloud layer (baked equirect coverage field, slab march in the atmosphere pass,
+    cloud shadows on the ground, per-style look hints) was built in the same round and removed again at the
+    user's request: these are small rocky worlds, and what is wanted is a barely visible thin haze, to be done
+    later with more precise instructions. The cloud code was removed before any commit and is not in the repository.
+- **First-landing freeze (user: "when 'landing' (first time) at Rust planet at alt ~30km i get long freeze -
+  like 10s almost - is there something regenerating?").** Nothing regenerates: it is shader compilation. A
+  frame-gap watch on a scripted descent put the stall at the first frame below 30 km over the ground, where the
+  coarsest rock level turns on and its three programs compile on first draw (placement, whose fragment shader
+  carries the whole terrain, HQ and lighting code at 45 KB of GLSL; the blocks; the shadow decal), with a second
+  stall at the first HQ ring (the ring program and the ground probe's). Headless Chrome, which compiles in
+  software, took 96 s and 16 s for the two; the user's GPU driver about 10 s. The startup precompile never did
+  anything: three's `compile` walks only visible objects, and it ran at init with the planet group still
+  hidden and the rings and rocks hidden until their altitude. Now `warmPrograms()` runs once a world has landed
+  (and when HQ terrain is switched on): stand-in meshes for every ring, probe and rock material go into the real
+  scene, `compileAsync` compiles them (the driver links in the background with KHR_parallel_shader_compile),
+  and they come out again. Two details made the first attempt compile the wrong variants, which the first
+  draw then threw away: three keys programs on the bound render target (none bound means the tone-mapped
+  sRGB on-screen variant, while the scene draws into the pipeline's target and the probe and placement into
+  their own), so the call runs with the pipeline's target bound; and a `PlaneGeometry` stand-in carries a
+  normal attribute (`HAS_NORMAL`), so the quads use a bare full-screen triangle like three's own. After the fix
+  the same descent compiles nothing and its longest frame is the 138 ms switch to the 768 mesh at 24 km; the
+  landing frame itself is 1.1 s in headless Chrome (the planet's own programs plus the nine warmed ones issued
+  together), where it was 96 s further down. Script: `.playwright-mcp/landfreeze.js` (descent with a frame-gap
+  and program-count watch), `landgap.js` (the same across the landing).
+- **HQ terrain off by default; rock windows reworked (user: "close terrain enhancing works mostly in static
+  scene, on lumpy landscape in close-ups while moving it (sometimes) looks like a wave front ... Also it followed
+  by 'rock seeding' artifact ... maybe we disable hd terrain, limit min alt to ~500m and call it a day?").**
+  - **Why the wave front cannot be tuned away.** Each ring level blends its added height onto the parent in a
+    band 10–12 cells out from the nadir (`morph` in `hqTerrain.ts`, N = 32). Fractal relief adds about 0.1–0.3
+    of the cell size per level, so the band carries a 0.2-cell feature across an 11-cell distance: 0.018 rad,
+    about 20 px of displacement, and the same in pixels at every level because the ratio is scale-free. Crater
+    rims are the worst, being tall and sharp, so they show from 5 km. Getting the error under a pixel needs the
+    band ~200 cells out, rings of ~450 cells and 16× the triangles; 64 cells (tried) halves it and costs too
+    much. Morphing across the whole ring would turn the front into a slow breathing of the ground, still
+    visible. So the rings are off by default (`state.hqTerrain`, Debug tab) and the code stays for later.
+  - **Floor without the rings.** The GPU ground probe now runs in both modes: with the rings off it evaluates
+    the coarse mesh's surface (the relief at the vertex footprint, `uVertexSpacing * 2`), so the camera floor,
+    the look-ahead and the height counter follow the drawn ground instead of the baked heightmap plus a margin.
+    `state.floor` (Debug tab "floor (km)", 0.5 by default) is the lowest height over it without the rings;
+    `hqFloor` still applies with them. The coarse mesh is ~1.2 km between vertices on a Rust-sized body at 768
+    segments, so at 500 m the horizon is a smooth arc and the ground's relief is in the shading only.
+  - **Rock seeding.** Two causes: rocks sit on the drawn triangle, so a ring band sweeping under them re-seats
+    them with the wave (gone with the rings off); and the placement window's edge fade (70–100% of the reach)
+    started while the biggest blocks of the level were still 6 px, so they grew in ahead of the camera. The
+    levels are rebanded so each level's largest block is under 2 px where its window ends (rMax <= reach / 540
+    at a 45° fov on ~850 px, i.e. cell >= 11 rMax at 96 cells; the level comes on at that same height, so it
+    also arrives under 2 px): cells 60 / 240 / 900 m with blocks 3–5.3 / 5.3–21 / 21–80 m, on below 2.9 / 11.5
+    / 43 km. A first cut kept 2–3.5 m pebbles in a fourth level of 30 m cells at 128-cell windows (2.4× the
+    instances); the user was fine without them ("im okay with lower number of 'pebbles' in near view, you could
+    save some perf on that"), so the windows stay at 96 cells and the count is what it was: three levels of
+    9 216 instances.
+  - Checked on Rust: the dive stops at 500 m over the probed ground with the rings off, the probe reads the
+    coarse surface (801.675 km at the test spot), 27 programs and none failing, rocks and the big blocks draw at
+    the floor. Script: `.playwright-mcp/floorcheck.js`.

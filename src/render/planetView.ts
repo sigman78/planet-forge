@@ -252,6 +252,16 @@ export class PlanetView {
         uLavaColor: u(new THREE.Color(DEFAULT_LOOK.lavaColor)),
         uLavaGlow: u(0),
         uShadows: u(1),
+        // Near shadow map (sun's view of the ground around the camera), written by NearShadow.
+        tNearShadow: u<THREE.Texture | null>(null),
+        uNearShadowVP: u(new THREE.Matrix4()),
+        uNearShadow: u(0),
+        uNearShadowKm: u(0.001),
+        uNearShadowRange: u(1),
+        uNearShadowU: u(new THREE.Vector3()),   // world km per map texel along u / v (receiver-plane bias)
+        uNearShadowV: u(new THREE.Vector3()),
+        // The viewing camera's position, for passes rendered from another camera (the near shadow map).
+        uViewPos: u(new THREE.Vector3()),
         uSpecular: u(0.5),
         uRoughMin: u(0.65),
         uTerrainAO: u(1),

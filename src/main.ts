@@ -20,6 +20,7 @@ import { createSky } from './render/sky.ts';
 import { PlanetCameraController } from './render/controls.ts';
 import { SunShadowMap } from './render/sunShadow.ts';
 import { Rocks } from './render/rocks.ts';
+import { NearShadow } from './render/nearShadow.ts';
 import { HQ_MAX_LEVELS, HQ_RING_CELLS, HQTerrain, PROBE_N } from './render/hqTerrain.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -56,9 +57,12 @@ async function main() {
     autoLook: true,
     cache: true, // reuse planets stored in IndexedDB (production builds)
     meshSegments: 0, // 0 = auto (by on-screen size)
-    /** HQ terrain: nested mesh rings near the camera carry the procedural relief as real geometry. Without them
-     * the camera stops 400 m plus a relief margin (~1 km) above the baked heightmap; with them, `hqFloor`. */
-    hqTerrain: true,
+    /** HQ terrain: nested mesh rings near the camera carry the procedural relief as real geometry. Off: the
+     * ring morph bands sweep the ground as a visible wave while the camera moves (see WORKLOG). */
+    hqTerrain: false,
+    /** Lowest camera height above the drawn ground (km) without HQ terrain: the coarse mesh is kilometres
+     * between vertices, so this keeps its facets from filling the view. */
+    floor: 0.5,
     /** HQ terrain: lowest camera height above the drawn ground (km) once the GPU probe reports it. */
     hqFloor: 0.1,
     /** HQ terrain: cells per ring side (32: cheaper; 64: relief carried twice as far out). */
@@ -74,6 +78,9 @@ async function main() {
     shafts: 3,
     /** Mood grade low in the air: shadows take the air's colour, highlights the sun's (0 = off). */
     mood: 2,
+    /** Near shadow map: the fine rings and rocks around the camera cast real shadows. Off until the
+     *  close-range moire and the grazing-sun edges are fixed (Light tab toggle). */
+    nearShadows: false,
     /** Surface rock density (0 = off). */
     rocks: 1,
     /** Console aid: 1 = shadow map verdict on the ground, 2 = haze glow only. */
@@ -123,6 +130,7 @@ async function main() {
   view.group.add(rocks.group);
   const hqTerrain = new HQTerrain(view);
   view.group.add(hqTerrain.group);
+  const nearShadow = new NearShadow();
   // Nothing to show until the first world is forged (the hologram stands in).
   view.group.visible = false;
   shared.uAtmoDensity.value = 0;
@@ -228,6 +236,32 @@ async function main() {
   function applyLook() {
     view.applyLook(look);
   }
+  /**
+   * Compile the programs the first descent will need (HQ rings, the ground probe, rock placement, blocks,
+   * decals and the depth copies) while the world is still seen from orbit. They compile on first draw
+   * otherwise, and three only precompiles visible objects, so the old startup call (planet group still hidden,
+   * rings and rocks hidden until their altitude) compiled nothing: the three rock programs froze the first
+   * landing below 30 km for seconds, the ring and probe programs again at the first ring. Stand-in meshes go
+   * into the real scene for the call (same fog/environment, same program keys) and come straight out again;
+   * with KHR_parallel_shader_compile the driver links in the background. The scene is drawn into the
+   * pipeline's target and the probe and rock placement into their own, so the compile runs with a target
+   * bound: against the screen three builds the tone-mapped sRGB variants instead, which the first draw then
+   * throws away for the real ones.
+   */
+  function warmPrograms() {
+    const objs = [...hqTerrain.programObjects(state.hqTerrain), ...rocks.programObjects()];
+    scene.add(...objs);
+    const prev = renderer.getRenderTarget();
+    renderer.setRenderTarget(pipeline.atmo.sceneRT);
+    try {
+      renderer.compileAsync(scene, camera).catch(() => {});
+    } catch (e) {
+      console.warn('program warm-up failed', e);
+    } finally {
+      renderer.setRenderTarget(prev);
+      scene.remove(...objs);
+    }
+  }
 
   // ---- Generation ------------------------------------------------------------------------------
   let abort: AbortController | null = null;
@@ -323,6 +357,7 @@ async function main() {
       if (state.autoLook && planet.info) applyLookHints(planet.info.look, env, look, planet.info.bulk, planet.info.archetype, gen.seed);
       applyEnv();
       applyLook();
+      warmPrograms();
       pane.refresh();
       syncShown(planet.info?.resolved);
       updateHud(planet, performance.now() - t0, session, params.seed);
@@ -591,6 +626,7 @@ async function main() {
   tLight.addBinding(env, 'sunIntensity', { label: 'sun intensity', min: 0, max: 30, step: 0.1 });
   tLight.addBinding(env, 'sunColor', { label: 'sun color' });
   tLight.addBinding(env, 'ambient', { label: 'space ambient', min: 0, max: 0.1, step: 0.0005 });
+  tLight.addBinding(state, 'nearShadows', { label: 'near shadows' });
   tLight.addBinding(env, 'fill', { label: 'planetshine', min: 0, max: 0.3, step: 0.005 });
   tLight.addBinding(env, 'fillColor', { label: 'planetshine col' });
   const fPost = tLight.addFolder({ title: 'Camera & post' });
@@ -607,8 +643,8 @@ async function main() {
   // Debug tab
   tDebug.addBinding(look, 'debug', { label: 'view', options: DEBUG_VIEWS });
   tDebug.addBinding(look, 'wireframe');
-  tDebug.addBinding(state, 'hqTerrain', { label: 'HQ terrain' }).on('change', () => state.hqTerrain && hqTerrain.compile(renderer, camera, scene));
-  if (state.hqTerrain) hqTerrain.compile(renderer, camera, scene);
+  tDebug.addBinding(state, 'hqTerrain', { label: 'HQ terrain' }).on('change', () => state.hqTerrain && warmPrograms());
+  tDebug.addBinding(state, 'floor', { label: 'floor (km)', min: 0.1, max: 3, step: 0.05 });
   tDebug.addBinding(state, 'hqFloor', { label: 'HQ floor (km)', min: 0.02, max: 0.4, step: 0.01 });
   tDebug.addBinding(state, 'hqCells', { label: 'HQ ring cells', options: Object.fromEntries(HQ_RING_CELLS.map((n) => [String(n), n])) });
   tDebug.addBinding(state, 'hqLevels', { label: 'HQ levels', min: 1, max: HQ_MAX_LEVELS, step: 1 });
@@ -693,10 +729,13 @@ async function main() {
     hqTerrain.maxLevels = state.hqLevels;
     hqTerrain.cellPx = state.hqCellPx;
     hqTerrain.update(camera, controller.aboveGround, view.terrainMat.uniforms.uPixelAngle.value, state.hqTerrain && view.group.visible);
-    hqTerrain.probe(renderer, probeDirs, probeAllow, controller.probeDirs(probeDirs, probeAllow));
-    controller.minAltitude = Number.isNaN(hqTerrain.probeRadius) ? 0.4 : state.hqFloor;
+    hqTerrain.probe(renderer, probeDirs, probeAllow, controller.probeDirs(probeDirs, probeAllow), view.group.visible && view.data !== null, (view.terrainMat.uniforms.uVertexSpacing.value as number) * 2);
+    // The floor over the probed surface; 400 m over the baked heights until the first reading arrives.
+    controller.minAltitude = Number.isNaN(hqTerrain.probeRadius) ? 0.4 : hqTerrain.activeLevels > 0 ? state.hqFloor : state.floor;
     controller.probeFloor = hqTerrain.probeFloor + 0.003;
+    (view.terrainMat.uniforms.uViewPos.value as THREE.Vector3).copy(camera.position);
     if (view.group.visible) rocks.update(renderer, camera, controller.aboveGround, state.rocks, look.debug);
+    nearShadow.update(renderer, view, hqTerrain, rocks, camera, controller.aboveGround, state.nearShadows && look.shadows > 0);
     if (view.group.visible) poiLabels.update(camera, controller.radius, controller.altitude, window.innerWidth, window.innerHeight);
     else poiLabels.update(camera, controller.radius, 0, 1, 1);
     aglCounter.update();
@@ -713,7 +752,7 @@ async function main() {
 
   // Expose for debugging in the console.
   Object.assign(window as unknown as Record<string, unknown>, {
-    forge: { renderer, scene, camera, view, rocks, hqTerrain, pipeline, controller, sunShadow, tour, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
+    forge: { renderer, scene, camera, view, rocks, hqTerrain, nearShadow, pipeline, controller, sunShadow, tour, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
   });
 }
 

@@ -2,6 +2,7 @@
 #define GRID 96
 uniform sampler2D tRock;
 uniform float uReach;    // km from the camera's nadir to the window edge: blocks shrink away toward it
+uniform vec3 uViewPos;   // the viewing camera (cameraPosition is the sun's when the near shadow map renders)
 
 varying vec3 vWorldPos;
 varying vec3 vLocal;     // shape space (unit rock), y up
@@ -20,8 +21,8 @@ void main() {
   float r = t0.w;
   // Blocks under ~1.5 px would only shimmer: shrink them away. Toward the window edge they shrink away too, by
   // their ground distance from the camera's nadir, so the edge moves with the camera and never with its heading.
-  float px = r / max(length(cameraPosition - P) * uPixelAngle, 1e-9);
-  float reach = acos(clamp(dot(normalize(P), normalize(cameraPosition)), -1.0, 1.0)) * uRadius / uReach;
+  float px = r / max(length(uViewPos - P) * uPixelAngle, 1e-9);
+  float reach = acos(clamp(dot(normalize(P), normalize(uViewPos)), -1.0, 1.0)) * uRadius / uReach;
   r *= smoothstep(0.8, 2.0, px) * (1.0 - smoothstep(0.7, 1.0, reach));
   if (r <= 0.0) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // outside the clip volume
@@ -96,9 +97,10 @@ void main() {
   vec3 Ls = uSunDir;
   float horizon = smoothstep(-0.02, 0.06, dot(n, Ls));
   vec3 sunCol = sunLightAt(vWorldPos);
-  vec3 col = brdf(albedo, 0.85, 0.0, N, V, Ls) * sunCol * horizon * vShadow * mix(0.6, 1.0, occ);
+  float shadow = vShadow * nearShadow(vWorldPos, N);
+  vec3 col = brdf(albedo, 0.85, 0.0, N, V, Ls) * sunCol * horizon * shadow * mix(0.6, 1.0, occ);
   // Bounce from the sunlit ground around the block: without air it is the only light on the shadowed faces.
-  float groundLit = max(dot(n, Ls), 0.0) * horizon * vShadow;
+  float groundLit = max(dot(n, Ls), 0.0) * horizon * shadow;
   col += albedo * tint * mean * sunCol * groundLit * (0.55 - 0.45 * dot(N, n)) * occ / PI;
   float dayAmb = smoothstep(-0.25, 0.3, dot(n, Ls));
   col += albedo * occ * (uSkyAmbient * dayAmb + vec3(uAmbient)) * (0.6 + 0.4 * dot(N, n));
