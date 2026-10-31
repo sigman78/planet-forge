@@ -43,6 +43,8 @@ export function createSharedUniforms() {
     uSunDir: u(new THREE.Vector3(1, 0.3, 0.4).normalize()),
     uSunColor: u(new THREE.Color(1, 0.97, 0.92).multiplyScalar(6)),
     uTime: u(0),
+    /** 1 when the renderer uses a reversed depth buffer (depth 1 at the near plane, 0 at the far plane). */
+    uRevZ: u(0),
     uSkyAmbient: u(new THREE.Color(0.1, 0.16, 0.28)),
     uAmbient: u(0.003),
     tFigure: u<THREE.Texture>(createFigureTexture()),
@@ -74,6 +76,8 @@ const LAYER_STYLE: [number, number, number, number][] = [
 // normal, so their texture cracks read as fine fracture grain inside the procedural plates instead of a second
 // plate net at the same size.
 const OCEAN_SEGMENTS = 160;
+/** HQ terrain ring levels at most (array uniforms below; HQ_LEVELS in rocks_place.frag.glsl). */
+export const HQ_LEVELS = 9;
 const LAYER_SCALE_MUL = [1, 1, 1, 1, 1, 1, 2.5, 2.2];
 const LAYER_NORMAL_MUL = [1, 1, 0.8, 1, 1, 1, 0.55, 0.6];
 
@@ -254,6 +258,18 @@ export class PlanetView {
         uWetness: u(0.5),
         uChannels: u(0.6),
         uDebug: u(0),
+        uHQOn: u(0),
+        uHQFace: u(0),
+        uHQSink: u(new THREE.Vector4()),
+        // Ring state for anything that must sit on the HQ surface (rocks); written by HQTerrain.
+        uHQMorph: u(new THREE.Vector2(1, 2)),
+        uHQK: u(0),
+        uHQN: u(64),
+        uHQOriginA: u(Array.from({ length: HQ_LEVELS }, () => new THREE.Vector2())),
+        uHQNadirA: u(Array.from({ length: HQ_LEVELS }, () => new THREE.Vector2())),
+        uHQCellSA: u(new Array(HQ_LEVELS).fill(1)),
+        uHQCellKmA: u(new Array(HQ_LEVELS).fill(1)),
+        uHQBlendA: u(new Array(HQ_LEVELS).fill(1)),
         uLayerDebugColor: u(LAYER_DEBUG.map((c) => new THREE.Color(c))),
         uUnitColors: u(Array.from({ length: MAX_UNITS }, () => new THREE.Color(0.5, 0.5, 0.5))),
       },

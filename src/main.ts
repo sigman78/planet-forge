@@ -20,18 +20,22 @@ import { createSky } from './render/sky.ts';
 import { PlanetCameraController } from './render/controls.ts';
 import { SunShadowMap } from './render/sunShadow.ts';
 import { Rocks } from './render/rocks.ts';
+import { HQ_MAX_LEVELS, HQ_RING_CELLS, HQTerrain } from './render/hqTerrain.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
 
 const DEBUG_VIEWS: Record<string, number> = {
-  Lit: 0, Albedo: 1, Normals: 2, Height: 3, 'Splat layers': 4, 'Geologic map': 5, Temperature: 6, Volatiles: 7, Flow: 8, 'Cube faces': 9, 'AO / rough': 10,
+  Lit: 0, Albedo: 1, Normals: 2, Height: 3, 'Splat layers': 4, 'Geologic map': 5, Temperature: 6, Volatiles: 7, Flow: 8, 'Cube faces': 9, 'AO / rough': 10, 'HQ levels': 11,
 };
 
 const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
 
 async function main() {
   // ---- Renderer --------------------------------------------------------------------------------
-  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+  // Reversed depth (needs EXT_clip_control): float depth keeps its precision at any distance, so the near plane
+  // can sit a few metres ahead without the far terrain and the sea shell fighting.
+  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', reversedDepthBuffer: true });
+  const reversedDepth = renderer.state.buffers.depth.getReversed();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -52,6 +56,16 @@ async function main() {
     autoLook: true,
     cache: true, // reuse planets stored in IndexedDB (production builds)
     meshSegments: 0, // 0 = auto (by on-screen size)
+    /** HQ terrain: nested mesh rings near the camera carry the procedural relief as real geometry. */
+    hqTerrain: false,
+    /** HQ terrain: lowest camera height above the drawn ground (km) once the GPU probe reports it. */
+    hqFloor: 0.1,
+    /** HQ terrain: cells per ring side (32: cheaper; 64: relief carried twice as far out). */
+    hqCells: 32,
+    /** HQ terrain: ring levels at most (each halves the cell size). */
+    hqLevels: 9,
+    /** HQ terrain: a level comes in once its cells span this many pixels below the camera. */
+    hqCellPx: 10,
     hideUi: false,
     /** HQ volumetrics: terrain shadows in the dust and haze (sun shadow-height map), more haze steps. */
     hq: false,
@@ -78,6 +92,7 @@ async function main() {
   const boot = $('boot');
   boot.classList.add('done');
   const shared = createSharedUniforms();
+  shared.uRevZ.value = reversedDepth ? 1 : 0;
   const holo = new Hologram(shared.uSunDir);
   {
     const s0 = new THREE.Scene();
@@ -105,6 +120,8 @@ async function main() {
   scene.add(holo.mesh);
   const rocks = new Rocks(view);
   view.group.add(rocks.group);
+  const hqTerrain = new HQTerrain(view);
+  view.group.add(hqTerrain.group);
   // Nothing to show until the first world is forged (the hologram stands in).
   view.group.visible = false;
   shared.uAtmoDensity.value = 0;
@@ -115,10 +132,13 @@ async function main() {
   pipeline.atmoUniforms.tSunShadow.value = sunShadow.rt.texture;
   pipeline.atmoUniforms.uSunShadowS.value = sunShadow.size;
   const controller = new PlanetCameraController(camera, renderer.domElement);
+  controller.nearFloor = reversedDepth ? 0.005 : 0.02;
   controller.surface = (dir) => {
     const d = view.data;
     // While the hologram stands in, the old terrain must not push the camera around.
     if (!d || !view.group.visible) return controller.radius;
+    // HQ rings: the GPU reports the drawn surface under the camera, so the margin for unknown relief can go.
+    if (!Number.isNaN(hqTerrain.probeRadius)) return Math.max(view.seaSolid ? controller.radius : -Infinity, hqTerrain.probeRadius + 0.003);
     return view.surfaceRadiusKm(dir, (x, y, z) => sampleDir(d.height, d.N, x, y, z));
   };
 
@@ -556,6 +576,11 @@ async function main() {
   // Debug tab
   tDebug.addBinding(look, 'debug', { label: 'view', options: DEBUG_VIEWS });
   tDebug.addBinding(look, 'wireframe');
+  tDebug.addBinding(state, 'hqTerrain', { label: 'HQ terrain' }).on('change', () => state.hqTerrain && hqTerrain.compile(renderer, camera, scene));
+  tDebug.addBinding(state, 'hqFloor', { label: 'HQ floor (km)', min: 0.02, max: 0.4, step: 0.01 });
+  tDebug.addBinding(state, 'hqCells', { label: 'HQ ring cells', options: Object.fromEntries(HQ_RING_CELLS.map((n) => [String(n), n])) });
+  tDebug.addBinding(state, 'hqLevels', { label: 'HQ levels', min: 1, max: HQ_MAX_LEVELS, step: 1 });
+  tDebug.addBinding(state, 'hqCellPx', { label: 'HQ cell px', min: 4, max: 32, step: 1 });
   tDebug
     .addBinding(state, 'meshSegments', { label: 'mesh / face', options: { auto: 0, '128': 128, '256': 256, '384': 384, '512': 512, '768': 768 } })
     .on('change', () => state.meshSegments && view.setMeshSegments(state.meshSegments));
@@ -632,10 +657,16 @@ async function main() {
     const maxSeg = controller.altitude < 25 ? (controller.radius >= 600 ? 768 : 512) : 384;
     if (!state.meshSegments) view.autoMeshSegments(camera, renderer.domElement.height, controller.altitude, 5, maxSeg);
     view.updateFootprint(camera, renderer.domElement.height);
+    hqTerrain.setCells(state.hqCells);
+    hqTerrain.maxLevels = state.hqLevels;
+    hqTerrain.cellPx = state.hqCellPx;
+    hqTerrain.update(camera, controller.aboveGround, view.terrainMat.uniforms.uPixelAngle.value, state.hqTerrain && view.group.visible);
+    hqTerrain.probe(renderer, camera);
+    controller.minAltitude = Number.isNaN(hqTerrain.probeRadius) ? 0.4 : state.hqFloor;
     if (view.group.visible) rocks.update(renderer, camera, controller.aboveGround, state.rocks, look.debug);
     if (view.group.visible) poiLabels.update(camera, controller.radius, controller.altitude, window.innerWidth, window.innerHeight);
     else poiLabels.update(camera, controller.radius, 0, 1, 1);
-    camInfo.text = `alt ${controller.altitude.toFixed(1)} km\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
+    camInfo.text = `alt ${controller.altitude.toFixed(1)} km · ${(controller.aboveGround * 1000).toFixed(0)} m above ground\nlat ${THREE.MathUtils.radToDeg(controller.lat).toFixed(1)}° lon ${THREE.MathUtils.radToDeg(controller.lon).toFixed(1)}°\nnear ${camera.near.toFixed(2)} far ${camera.far.toFixed(0)}`;
     const hq = state.hq && view.group.visible && shared.uHaze.value + shared.uMie.value * shared.uAtmoDensity.value > 0;
     pipeline.atmoUniforms.uHQ.value = hq ? 1 + state.hqDebug : 0;
     pipeline.atmoUniforms.uShafts.value = state.shafts;
@@ -648,7 +679,7 @@ async function main() {
 
   // Expose for debugging in the console.
   Object.assign(window as unknown as Record<string, unknown>, {
-    forge: { renderer, scene, camera, view, rocks, pipeline, controller, sunShadow, tour, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
+    forge: { renderer, scene, camera, view, rocks, hqTerrain, pipeline, controller, sunShadow, tour, env, look, state, get gen() { return gen; }, regenerate, applyEnv, applyLook, loadPreset },
   });
 }
 

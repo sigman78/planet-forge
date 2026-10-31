@@ -40,7 +40,7 @@ export async function createSky(scene: THREE.Scene, shared: SharedUniforms, base
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   const [sv, sf] = splitShader(starsGlsl);
   const starMat = new THREE.ShaderMaterial({
-    uniforms: { uIntensity: { value: 1 }, uPixelRatio: { value: 1 } },
+    uniforms: { uIntensity: { value: 1 }, uPixelRatio: { value: 1 }, uRevZ: shared.uRevZ },
     vertexShader: sv,
     fragmentShader: sf,
     depthWrite: false,
@@ -58,6 +58,7 @@ export async function createSky(scene: THREE.Scene, shared: SharedUniforms, base
     uniforms: {
       uSunDir: shared.uSunDir,
       uSunColor: shared.uSunColor,
+      uRevZ: shared.uRevZ,
       uSize: { value: 0.35 },
       uAspect: { value: 1 },
       uDiscIntensity: { value: 400 },

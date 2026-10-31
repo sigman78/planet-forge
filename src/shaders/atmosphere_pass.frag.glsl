@@ -9,7 +9,8 @@ uniform float uSunIntensity;
 uniform int uSteps;
 uniform float uFrame;
 uniform float uJitter;
-uniform float uHQ;              // 1 = volumetric terrain shadows in the dust and haze, more haze steps; debug: 2 = shadow map on the ground, 3 = haze glow only
+uniform float uRevZ;            // 1 with a reversed depth buffer (tDepth: 1 at the near plane, 0 at the far plane)
+uniform float uHQ;             // 1 = volumetric terrain shadows in the dust and haze, more haze steps; debug: 2 = shadow map on the ground, 3 = haze glow only
 uniform sampler2D tSunShadow;   // sun shadow map, 6 faces tiled 3x2: R = km above the datum where light starts, G = its lift above the ground
 uniform float uSunShadowS;      // face tile size in texels
 uniform float uShafts;          // stretches the terrain's shadow volumes upward (1 = physical)
@@ -68,12 +69,15 @@ void main() {
   vec3 col = src.rgb;
   if (uAtmoDensity <= 0.0) { gl_FragColor = vec4(col, 1.0); return; }
   float d = texture(tDepth, vUv).x;
-  vec4 vp = uInvProj * vec4(vUv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+  // Reversed depth buffer: the depth is the clip z/w itself (near 1, far 0), with nothing drawn at 0.
+  bool rev = uRevZ > 0.5;
+  bool sky = rev ? d <= 1e-7 : d >= 0.999999;
+  vec4 vp = uInvProj * vec4(vUv * 2.0 - 1.0, rev ? d : d * 2.0 - 1.0, 1.0);
   vp /= vp.w;
   vec3 wp = (uCamWorld * vec4(vp.xyz, 1.0)).xyz;
   vec3 ro = uCamPos;
   vec3 rd = normalize(wp - ro);
-  float sceneT = d >= 0.999999 ? 1e9 : length(wp - ro);
+  float sceneT = sky ? 1e9 : length(wp - ro);
   if (uHQ > 1.5 && uHQ < 2.5) {
     // Debug: the shadow-height map's verdict for the visible ground (lifted a little off the surface).
     float v = sceneT < 1e8 ? terrainLit(wp + normalize(wp) * 0.3, 0.2) : 0.0;

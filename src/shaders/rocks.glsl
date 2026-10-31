@@ -1,6 +1,7 @@
 // Surface rocks: instanced lumpy blocks placed by rocks_place.frag.glsl, lit like the terrain.
 #define GRID 96
 uniform sampler2D tRock;
+uniform float uReach;    // km from the camera's nadir to the window edge: blocks shrink away toward it
 
 varying vec3 vWorldPos;
 varying vec3 vLocal;     // shape space (unit rock), y up
@@ -17,9 +18,11 @@ void main() {
   vec4 t2 = texelFetch(tRock, b + ivec2(2, 0), 0);
   vec3 P = t0.xyz;
   float r = t0.w;
-  // Blocks under ~1.5 px would only shimmer: shrink them away.
+  // Blocks under ~1.5 px would only shimmer: shrink them away. Toward the window edge they shrink away too, by
+  // their ground distance from the camera's nadir, so the edge moves with the camera and never with its heading.
   float px = r / max(length(cameraPosition - P) * uPixelAngle, 1e-9);
-  r *= smoothstep(0.8, 2.0, px);
+  float reach = acos(clamp(dot(normalize(P), normalize(cameraPosition)), -1.0, 1.0)) * uRadius / uReach;
+  r *= smoothstep(0.8, 2.0, px) * (1.0 - smoothstep(0.7, 1.0, reach));
   if (r <= 0.0) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);   // outside the clip volume
     return;

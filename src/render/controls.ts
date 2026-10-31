@@ -93,6 +93,8 @@ export class PlanetCameraController {
   userPitch = 0; // added to the automatic pitch, radians
   minAltitude = 0.4; // km above the terrain
   maxAltitude = 12000;
+  /** Smallest near plane (km). A reversed depth buffer keeps its precision at any near plane; set it lower then. */
+  nearFloor = 0.02;
   autoTilt = true;
   autoRotate = 0; // rad/s around the planet axis
   radius = 800;
@@ -449,7 +451,7 @@ export class PlanetCameraController {
     this.camera.quaternion.copy(this.frame).multiply(_q.setFromAxisAngle(_v.set(1, 0, 0), -pitch));
 
     // Depth range adapted to altitude.
-    const near = THREE.MathUtils.clamp(altAboveGround * 0.25, 0.02, 200);
+    const near = THREE.MathUtils.clamp(altAboveGround * 0.25, this.nearFloor, 200);
     const far = r + this.radius * 1.5 + 200;
     if (Math.abs(this.camera.near - near) > near * 0.05 || this.camera.far !== far) {
       this.camera.near = near;

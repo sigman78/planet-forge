@@ -3,13 +3,14 @@ uniform vec3 uSunDirView;   // unused placeholder for clarity
 uniform vec3 uSunDir;
 uniform float uSize;        // NDC half-size of the glare quad
 uniform float uAspect;
+uniform float uRevZ;        // reversed depth buffer: the far plane is at depth 0
 varying vec2 vUv;
 void main() {
   vec4 clip = projectionMatrix * vec4(mat3(viewMatrix) * uSunDir, 1.0);
   if (clip.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   vUv = position.xy;
   vec2 ndc = clip.xy / clip.w + position.xy * vec2(uSize / uAspect, uSize);
-  gl_Position = vec4(ndc, 0.99999, 1.0);
+  gl_Position = vec4(ndc, uRevZ > 0.5 ? 0.00001 : 0.99999, 1.0);
 }
 //#FRAGMENT
 uniform vec3 uSunColor;

@@ -40,6 +40,9 @@ uniform vec3  uUnitColors[32];
 varying vec3 vDir;
 varying float vElevM;
 varying vec3 vWorldPos;
+// HQ terrain ring level (0 on the coarse mesh), for the debug tint. The rings share this exact shader source:
+// a variant (define, extra varying) compiled measurably slower on D3D.
+uniform float uHQLevel;
 
 
 vec3 heightRamp(float h) {
@@ -513,5 +516,11 @@ void main() {
     col = faceCol[int(stf.z)] * (0.6 + 0.4 * step(0.45, max(g.x, g.y)));
   }
   else if (uDebug == 10) col = vec3(ao * terrAO * shadow);
+  else if (uDebug == 11) {
+    // HQ levels: grey = coarse mesh, then a hue per ring level.
+    float lv = uHQLevel;
+    vec3 tint = lv < 0.5 ? vec3(0.5) : 0.55 + 0.45 * cos(6.2831853 * (lv * 0.17 + vec3(0.0, 0.33, 0.67)));
+    col = tint * (0.25 + 0.75 * max(dot(N, Lsun), 0.0));
+  }
   gl_FragColor = vec4(col, 1.0);
 }

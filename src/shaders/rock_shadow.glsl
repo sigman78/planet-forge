@@ -2,6 +2,7 @@
 // the sun by the sun's elevation, multiplied into the lit terrain (dst *= src).
 #define GRID 96
 uniform sampler2D tRock;
+uniform float uReach;
 
 varying vec2 vQuad;        // x across, y along the shadow (0 at the rock, 1 at the tip)
 varying float vStrength;
@@ -14,7 +15,8 @@ void main() {
   vec3 P = t0.xyz;
   float r = t0.w;
   float px = r / max(length(cameraPosition - P) * uPixelAngle, 1e-9);
-  r *= smoothstep(0.8, 2.0, px);
+  float reach = acos(clamp(dot(normalize(P), normalize(cameraPosition)), -1.0, 1.0)) * uRadius / uReach;
+  r *= smoothstep(0.8, 2.0, px) * (1.0 - smoothstep(0.7, 1.0, reach));
   vec3 up = normalize(t1.xyz);
   float sunUp = dot(uSunDir, up);
   vec3 Lt = uSunDir - up * sunUp;

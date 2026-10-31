@@ -5,6 +5,8 @@ import { dirToFace, faceST, faceToDir } from '../core/cube.ts';
 import { COMMON, splitShader, type PlanetView } from './planetView.ts';
 import terrainCommon from '../shaders/terrain_common.glsl?raw';
 import terrainLight from '../shaders/terrain_light.glsl?raw';
+import terrainFine from '../shaders/terrain_fine.glsl?raw';
+import terrainHq from '../shaders/terrain_hq.glsl?raw';
 import placeFrag from '../shaders/rocks_place.frag.glsl?raw';
 import rocksGlsl from '../shaders/rocks.glsl?raw';
 import shadowGlsl from '../shaders/rock_shadow.glsl?raw';
@@ -27,8 +29,8 @@ interface RockLevel {
   clusterKm: number;
 }
 
-// A block of radius r stays above ~2 px out to about r * 1000 (45 deg fov at ~850 px), so each level's window
-// (GRID cells across) is sized to that reach: cell ~ 20 r.
+// A block of radius r stays above ~2 px out to about r * 1000 (45 deg fov at ~850 px). Each level's window
+// (GRID cells across, centred on the nadir) reaches GRID / 2 cells from the camera: cell ~ 20 r.
 const LEVELS: RockLevel[] = [
   { cellKm: 0.03, rMin: 0.002, rMax: 0.008, maxAlt: 3, density: 0.9, clusterKm: 0.8 },
   { cellKm: 0.12, rMin: 0.006, rMax: 0.025, maxAlt: 9, density: 0.7, clusterKm: 3 },
@@ -64,6 +66,8 @@ class Level {
   readonly mesh: THREE.Mesh;
   readonly shadow: THREE.Mesh;
   private cellS = 0;
+  /** Ground distance (km) from the nadir to the window edge; shared by the block and shadow materials. */
+  private reach = { value: 1 };
   // Per-level views of the shared buffers: each level draws as many windows as it uses.
   private geo: THREE.InstancedBufferGeometry;
   private quadGeo: THREE.InstancedBufferGeometry;
@@ -84,28 +88,26 @@ class Level {
       uniforms: {
         ...T,
         uAnchor: { value: Array.from({ length: MAX_WINDOWS }, () => new THREE.Vector3()) },
-        uCenter: { value: Array.from({ length: MAX_WINDOWS }, () => new THREE.Vector2()) },
         uWindows: { value: 1 },
         uCellS: { value: 1 },
         uRMin: { value: cfg.rMin },
         uRMax: { value: cfg.rMax },
         uDensity: { value: cfg.density },
         uLevel: { value: index },
-        uSegments: { value: 384 },
         uOcean: { value: 0 },
         uClusterKm: { value: cfg.clusterKm },
         uCamPos: { value: new THREE.Vector3() },
         uRockDensity: { value: ROCK_DENSITY },
       },
       vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: COMMON + terrainCommon + terrainLight + placeFrag,
+      fragmentShader: COMMON + terrainCommon + terrainFine + terrainHq + terrainLight + placeFrag,
       depthTest: false,
       depthWrite: false,
     });
     this.quad = new FullScreenQuad(this.place);
     const [vs, fs] = splitShader(rocksGlsl);
     const mat = new THREE.ShaderMaterial({
-      uniforms: { ...T, tRock: { value: this.rt.texture }, uRockTile: { value: ROCK_TILE } },
+      uniforms: { ...T, tRock: { value: this.rt.texture }, uRockTile: { value: ROCK_TILE }, uReach: this.reach },
       vertexShader: COMMON + terrainCommon + vs,
       fragmentShader: COMMON + terrainCommon + terrainLight + fs,
     });
@@ -115,7 +117,7 @@ class Level {
     // Shadow decals multiply the lit ground (dst *= src) after the terrain and before the rocks.
     const [svs, sfs] = splitShader(shadowGlsl);
     const smat = new THREE.ShaderMaterial({
-      uniforms: { ...T, tRock: { value: this.rt.texture } },
+      uniforms: { ...T, tRock: { value: this.rt.texture }, uReach: this.reach },
       vertexShader: COMMON + terrainCommon + svs,
       fragmentShader: sfs,
       transparent: true,
@@ -134,10 +136,11 @@ class Level {
   }
 
   /**
-   * Window centre on the ground ahead of the camera, snapped to world cells. Cells belong to the face they lie on
-   * and are hashed in that face's grid, so when the rock area reaches over a cube edge the neighbour face gets a
-   * window of its own instead of the anchor face's grid running on (which reshuffled every rock as the centre
-   * crossed the edge).
+   * Window centred on the camera's nadir, snapped to world cells. Cells belong to the face they lie on and are
+   * hashed in that face's grid, so when the rock area reaches over a cube edge the neighbour face gets a window
+   * of its own instead of the anchor face's grid running on (which reshuffled every rock as the centre crossed
+   * the edge). The window is not pushed ahead along the heading: that made every turn of the camera move the
+   * window, and the blocks fading at its edge grew, shrank and vanished as the view swung.
    */
   update(renderer: THREE.WebGLRenderer, view: PlanetView, camera: THREE.PerspectiveCamera, groundAlt: number, density: number) {
     const on = density > 0 && groundAlt < this.cfg.maxAlt && view.data !== null;
@@ -145,15 +148,8 @@ class Level {
     if (!on) return;
     const R = view.shared.uPlanetRadius.value;
     this.cellS = 2 / Math.round((R * Math.PI * 0.5) / this.cfg.cellKm);
-    const up = camera.position.clone().normalize();
-    const fwd = camera.getWorldDirection(new THREE.Vector3());
-    fwd.addScaledVector(up, -fwd.dot(up));
-    if (fwd.lengthSq() < 1e-8) fwd.set(0, 0, 0);
-    else fwd.normalize();
-    const windowKm = GRID * this.cfg.cellKm;
-    // Most of the window ahead of the camera, where the ground is on screen.
-    const ahead = windowKm * 0.3;
-    const c = camera.position.clone().addScaledVector(fwd, ahead).normalize();
+    this.reach.value = (GRID / 2) * this.cfg.cellKm;
+    const c = camera.position.clone().normalize();
     const fc = dirToFace(c.x, c.y, c.z);
     const half = (GRID / 2) * this.cellS * 1.05;
     const faces = [fc.face];
@@ -168,12 +164,10 @@ class Level {
     faces.forEach((f, k) => {
       const st = k === 0 ? fc : faceST(f, c.x, c.y, c.z);
       U.uAnchor.value[k].set(f, Math.floor((st.s + 1) / this.cellS), Math.floor((st.t + 1) / this.cellS));
-      U.uCenter.value[k].set(st.s, st.t);
     });
     U.uWindows.value = faces.length;
     this.geo.instanceCount = this.quadGeo.instanceCount = GRID * GRID * faces.length;
     U.uCellS.value = this.cellS;
-    U.uSegments.value = view.segments;
     U.uOcean.value = view.seaSolid ? 1 : 0;
     U.uDensity.value = this.cfg.density * density;
     U.uCamPos.value.copy(camera.position);
@@ -195,9 +189,10 @@ class Level {
 }
 
 /**
- * Ejecta blocks and talus near the camera. Placement runs on the GPU every frame (the terrain mesh, and so the
- * ground the rocks sit on, changes with the camera), then each level draws GRID² instanced blocks; empty cells
- * collapse to nothing in the vertex shader.
+ * Ejecta blocks and talus near the camera. Placement runs on the GPU every frame: a rock's place, size, layer
+ * and the slope it sits on come from the height field at its world cell and never change, but its height follows
+ * the footprint the terrain is drawn at there, which refines with the camera. Each level then draws GRID²
+ * instanced blocks; empty cells collapse to nothing in the vertex shader.
  */
 export class Rocks {
   readonly group = new THREE.Group();

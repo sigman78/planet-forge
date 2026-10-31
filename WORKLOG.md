@@ -296,3 +296,137 @@ Newest entries at the bottom. Times are local.
   - Keys cancel the tour or a flight, and are ignored while typing in a pane field.
   - Altitude below the datum (deep basins) now eases linearly instead of in log space.
   - Help line updated.
+
+## 2026-10-30 — HQ terrain: sub-datum mesh rings (branch exp/hq-subdiv)
+
+- **Request (user):** an HQ mode toggle that adds procedural geometry finer than the baked height, measures its cost
+  and lets the camera go closer. Fable's plan is in `docs/plan-hq-subdivision.md`.
+- **Rings:** `src/render/hqTerrain.ts` draws up to 9 camera-centred, cube-aligned grid rings (N = 64 cells per side,
+  each level half the cell of the one outside it) on the face under the camera.
+  - The vertex shader displaces them with the full height: baked + landform octaves + the fine octaves the fragment
+    normals already paint (`terrain_fine.glsl`, a vertex-side mirror of the fragment's fine relief; keep in sync).
+  - Origins are snapped to the parent grid. Each ring morphs onto its parent toward its edge, and the outermost one
+    morphs onto the coarse mesh triangles, so the levels meet without cracks or skirts. Levels fade in by pixel size and
+    the whole thing fades out between 14 and 20 km above the ground.
+  - The coarse mesh under the rings sinks by 3 km, so depth testing rejects it. There's no discard.
+  - The rings use exactly the coarse terrain's fragment source. A `#define` variant compiled ~40% slower on D3D;
+    `uHQLevel` (0 on the coarse mesh) drives debug view 11, "HQ levels".
+- **Closer:** a 1-pixel probe evaluates the ring surface height under the camera (async readback). With HQ on, the
+  ground clamp uses it and the floor drops from 0.4 km to `HQ floor` (default 0.1 km, Debug tab).
+- **Rocks** are placed on the ring triangles (shared `terrain_hq.glsl`). The first version inlined the ring vertex
+  rule per level and corner. On D3D that made a shader that hung the GPU process (context lost), so the level loop now
+  only finds the ring, and one 3-corner loop builds the triangle.
+- **Cost** (GTX-class, 1920×1080, rust 26508 rugged spot, rocks on, GPU timer medians; HQ off is ~16 ms):
+
+  | height above ground | N = 128 | N = 64 |
+  |---|---|---|
+  | 0.1 km, horizon | +8.2 ms | +5.9 ms |
+  | 0.4 km, horizon | +6.5 | +5.2 |
+  | 2 km, horizon | +4.7 | +4.0 |
+  | 6 km, horizon | +4.3 | +2.1 |
+  | 2 km, looking down | +2.7 | +0.8 |
+
+  - Rock placement goes from 0.22 to 0.89 ms.
+  - Most of the extra cost is fragment shading of nearer, steeper surfaces: the ground is now closer to the camera, so
+    more detail octaves pass their pixel-size fade.
+  - The 0.1 km row compares HQ on at 0.1 km with HQ off at its own 0.4 km floor; HQ off can't go lower.
+  - HQ off vs master (side-by-side worktree run): same GPU time. The one view where master is frame-stable is
+    byte-identical; at the other two, master itself gave different hashes between runs, so they couldn't be compared.
+- **Not yet checked:** popping while flying low, anchor-face crossings, the frozen sea on ice shell under the rings, wireframe.
+- **Optimize and cap (user):**
+  - **Timing method:** GPU timer queries on this machine flip between two clock states (~16 vs ~20 ms for the same frame).
+    Cost runs now pause the app's own frames and compare configs on the best of several 12-frame wall-clock runs, from
+    the same camera for every config (`.playwright-mcp/final.js`).
+  - **Where the time went:** shading, not vertex work.
+    - The outer ring was most of the cost: in the far grazing band its cells are ~40 px wide and ~1 px tall, and 2×2
+      pixel-quad shading of slivers that thin wastes most of the work. Flattened onto the coarse surface it cost the same, so
+      the cost was triangle density, not relief.
+    - Its morphed band slid onto the coarse triangles but kept all its own triangles, and the coarse mesh was also drawn
+      in a 1.25-cell overlap band.
+  - **Changes:**
+    - Default ring size is 32 cells (was 64). Ring size is switchable at runtime (`setCells`, Debug tab: 32 or 64).
+    - The outer ring collapses like the inner ones (odd vertices onto even, zero-area triangles). Its cells take the
+      diagonal of the coarse cell they lie in (two index variants by grid parity), so collapsed it is exactly the coarse
+      mesh. That fixed coarse patches at its edge and removes any pop when the rings fade out. Rock placement follows the
+      same diagonal rule.
+    - The coarse mesh sinks everywhere inside the outer ring except its edge vertices (overlap inset 2.5 → 0.5 ring cells).
+    - Each ring is split into 8×8-cell blocks, drawn nearest the camera first. Blocks outside the view are culled with a
+      conservative height bound (ground under the camera ± (0.2 km + 2 × horizontal distance)). This saves vertex work;
+      the near-to-far order made no measurable difference.
+    - Debug tab: `HQ ring cells` (32/64), `HQ levels` (cap, 1–9), `HQ cell px` (level threshold).
+  - **Cost now** (rust 26508 rugged spot, rocks on; ms over HQ off, same camera):
+
+    | view | 32 cells (default) | 64 cells | 32, cap 4 levels | 32, 20 px |
+    |---|---|---|---|---|
+    | 0.1 km, horizon | +2.0 | +4.5 | +1.9 | +1.7 |
+    | 0.4 km, horizon | +2.2 | +4.6 | +2.2 | +2.2 |
+    | 2 km, horizon | +1.6 | +3.4 | +1.4 | +1.6 |
+    | 6 km, horizon | +0.1 | +1.4 | +0.1 | +0.5 |
+    | 0.4 km, looking down | +0.7 | +3.6 | +0.9 | +0.6 |
+
+    - Before this round, the same 0.1 km view cost +5.9 ms (64 cells).
+    - The level cap and the level threshold barely move the cost: the far, coarse levels are what cost, not the fine ones.
+    - Outlier: the 2 km looking-down view measured HQ off ~4 ms *slower* than HQ on in every round; not explained yet.
+  - **Trade-off:** 32-cell rings carry relief half as far out (the outer ring reaches ~13 km instead of ~26 km), so
+    mid-distance ridges are smoother than with 64.
+
+- **Diagnosis: close-range quality, rolling rocks, the floor, wire see-through (user).** Measured on rust 26508 (R 798 km,
+  768 segments) and basalt 7; scripts `.playwright-mcp/drift.js`, `breakdown.js`, `cull.js`, `wire.js`.
+  - **Rocks move because they sit on the drawn mesh.** `rocks_place.frag.glsl` takes the rock's position from the
+    rendered triangle (coarse mesh or morphing HQ ring) and its up vector from that triangle's normal, every frame.
+    Tracked level-0 rocks (world cell id) while the camera walked 1 m per step at 150 m above ground:
+
+    | | slide per metre of travel | tilt per metre | lost per 10° turn (within 1 km) |
+    |---|---|---|---|
+    | HQ on (9 levels) | 0.10 m mean, 6.5 m max | 1.2–2.8° mean, 180° max | 23 rocks; size changes 0.18 m mean |
+    | HQ off (400 m floor) | 0.01 m | 0.01° | — |
+
+    The ring morph slides odd vertices one cell and the collapsed triangles have no normal (the 180° flips). Turning
+    moves the window centre (`ahead` = 0.3 window along the heading), and the edge fade is measured from that centre, so
+    looking around grows/shrinks every rock in the outer 30 % of the window and drops the ones past it. The mesh density
+    switch (384/512/768) moves every coarse triangle too.
+  - **Floor:** 400 m without the probe (`controls.ts` minAltitude), 100 m with it (`hqFloor`), probe = nadir only + 3 m.
+    At 10 m: the near plane floor is 20 m (`clamp(alt·0.25, 0.02, 200)`), so the ground around the camera is clipped,
+    and a slope a few metres ahead rises over the camera (`.playwright-mcp/floor-10m.png`). A probe dropout snaps
+    minAltitude back to 400 m. `EXT_clip_control` is available here and three 0.186 has `reversedDepthBuffer`; the
+    atmosphere pass unprojects `d*2-1` and would need the reversed mapping.
+  - **Why HQ geometry shows little at 100 m:** the finest procedural octave is ~28 m (6 km / 2.15^7); the finest ring
+    cell is 3.2 m, so the rings already carry every octave there is. Below 28 m only the textures remain. More levels buy
+    nothing without octaves 8–10 (13 m, 6 m, 2.8 m) and sub-metre rocks.
+  - **Frame breakdown** at 0.4 km, HQ on, 1280×800 (best-of 12-frame wall time, ms): full 10.9; coarse mesh 0.3
+    (full sphere vs one face: 1.0 vs 0 — not worth culling); rock placement 0.9 + rock draw 0.8; HQ rings 1.6;
+    atmosphere 16 steps 1.2 (0.2 with ground in view); bloom 0.85; SMAA 0. Terrain fragment shading is 5.7 ms
+    (coarse mesh alone 8.0 vs nothing but sky and post 2.3), whichever mesh draws it: the terrain shader over the screen
+    is more than half the frame.
+  - **Wire mode see-through is inherent:** only `terrainMat.wireframe` is set; the ocean/lava shell stays solid, and in
+    lava mode it is never discarded (depth test only), so it shows through the lines everywhere (`wire-hq.png`,
+    `wire-nohq.png`; `wire-solid.png` is clean). The coarse mesh sunk 3 km under the rings shows as a second lattice.
+
+- **Rocks placed from the height field; reversed depth buffer; HUD height above ground (user).**
+  - **Rocks no longer sit on the drawn triangles.** `rocks_place.frag.glsl` takes a rock's direction from its world
+    cell, its height from `hqHeightM` at the footprint the terrain is drawn at there (`drawnFootprint`: the finest
+    HQ ring holding the point, morphed as `hqRingVertex` does, or the coarse mesh's footprint outside the rings),
+    and its up vector from the ground a rock diameter either side. Size, layer and density depend on the cell alone.
+    So rocks never slide or tilt with the mesh; their height breathes with it as the rings refine, which is what the
+    ground itself does. The old 4-corner coarse triangle and 3-corner ring triangle (7 height evaluations) are gone;
+    the new path is 3 (or 1 for an empty cell). Placement cost 0.9 → 0.37 ms.
+  - **Rock windows are centred on the nadir** (were pushed 30 % of the window ahead along the heading) and blocks
+    shrink away toward the window edge by their ground distance from the nadir, in the vertex shader (`uReach`),
+    instead of by distance from the swinging centre in the placement pass. Forward reach of level 0 is 1.4 km now
+    (was 2.3); the 2–8 m blocks beyond that are under ~6 px.
+  - Same drift test as above (level-0 rocks, 1 m steps at 150 m above ground, HQ on, 9 levels):
+
+    | | slide per metre | tilt per metre | per 10° turn (within 1 km) |
+    |---|---|---|---|
+    | before | 0.10 m mean, 6.5 m max | 1.2–2.8° mean, 180° max | 23 rocks lost, size ±0.18 m |
+    | after | 0.02 m mean, 0.29 m max (vertical, morph bands) | 0.11° mean, 2.2° max | 0 rocks lost, size unchanged (slide max 0.09 m, tilt max 1.3°) |
+
+  - **Reversed depth buffer** (`reversedDepthBuffer: true`; `EXT_clip_control` is present here, three 0.186 flips
+    depth funcs, clear depth and polygon offset itself). Shared uniform `uRevZ` tells the shaders that put things at
+    the far plane (stars, sun: depth 1e-5 instead of 0.99999) and the atmosphere pass (depth is clip z/w itself:
+    unproject with `d`, sky at `d <= 1e-7`). The HQ block culling frustum takes `camera.reversedDepth`. Near-plane
+    floor 20 m → 5 m with the reversed buffer (`controller.nearFloor`), 20 m without. Checked: 100 m horizon view,
+    sky with stars, orbit, and a lava world's far shoreline; no console errors.
+  - HUD `camera` line shows metres above ground next to the datum altitude (the "alt" the user compared against was
+    the datum altitude).
+  - Floor stays at 100 m (user: the current closest is about right; HQ shows there).
