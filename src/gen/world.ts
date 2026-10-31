@@ -16,7 +16,7 @@ export const U = {
   HIGHLANDS: 0, BASIN_FLOOR: 1, BASIN_RIM: 2, MARE: 3, SHIELD: 4, RISE: 5, FLOWS: 6, CANYON: 7, CHAOS: 8,
   EJECTA: 9, RAYED: 10, DUNES: 11, POLAR_CAP: 12, FROZEN_SEA: 13, SEA: 14, PLAYA: 15, LINEATED_ICE: 16,
   FOSSAE: 17, SMOOTH_PLAINS: 18, LAVA_LAKE: 19, PLUME_DEPOSITS: 20, CRYO_DOME: 21, CRYO_FLOWS: 22, GROOVED: 23,
-  PALIMPSEST: 24, CANTALOUPE: 25, FACULA: 26, BLOCK_MOUNTAIN: 27, FISSURE: 28, DIRTY_ICE: 29,
+  PALIMPSEST: 24, CANTALOUPE: 25, FACULA: 26, BLOCK_MOUNTAIN: 27, FISSURE: 28, DIRTY_ICE: 29, DARK_HALO: 30,
 } as const;
 
 export const GEO_UNITS: GeoUnit[] = [
@@ -50,6 +50,7 @@ export const GEO_UNITS: GeoUnit[] = [
   { id: 27, name: 'block mountain', color: [0.55, 0.35, 0.22] },
   { id: 28, name: 'fissure (tiger stripe)', color: [0.2, 0.45, 0.85] },
   { id: 29, name: 'dark dirty ice', color: [0.42, 0.38, 0.34] },
+  { id: 30, name: 'dark-halo crater', color: [0.18, 0.17, 0.2] },
 ];
 
 // ---- archetypes --------------------------------------------------------------------------------------------
@@ -264,7 +265,7 @@ export function figureAt(f: Figure, n: Noise3, x: number, y: number, z: number):
 /** Band of parallel grooves along a great circle with normal n (Ganymede-style grooved terrain). */
 export interface GrooveBand { nx: number; ny: number; nz: number; w: number; freq: number; amp: number }
 
-export const CRATER_STRIDE = 8; // x y z r depth rim peak flag(0 plain, 1 rays, 2 facula)
+export const CRATER_STRIDE = 9; // x y z r depth rim peak flag(0 plain, 1 rays, 2 facula, 3 dark halo, 4 secondary) degradation(0 fresh .. 1 worn)
 
 export interface WorldPlan {
   p: GenParams;
@@ -419,7 +420,7 @@ export function computeBulk(p: GenParams, arch: ArchDef, rng: Rng): { bulk: Plan
 
 /** Truncated power-law crater list (radius in rad), largest first. Depth follows the simple→complex transition, which moves to larger craters at low gravity. */
 function makeCraters(rng: Rng, count: number, rMin: number, rMax: number, Rkm: number, g: number, relief: number, relax: number,
-  rays: number, faculae: number): Float64Array {
+  rays: number, faculae: number, darkHalos: number, degradation: [number, number]): Float64Array {
   const out = new Float64Array(count * CRATER_STRIDE);
   const alpha = 1.75;
   const q = Math.pow(rMin / rMax, alpha);
@@ -437,6 +438,10 @@ function makeCraters(rng: Rng, count: number, rMin: number, rMax: number, Rkm: n
     out[o + 5] = 0.2 + 0.12 * rng.next();
     out[o + 6] = rk > halfT * 0.7 ? 0.3 + 0.35 * rng.next() : 0;
     out[o + 7] = 0;
+    // Degradation: a continuum from crisp to worn, skewed toward worn for the old population (small craters wear
+    // out faster: they fill and their rims erode in the same time a big rim only softens).
+    const small = Math.min(1, 0.6 * Math.pow(0.012 / Math.max(r, 1e-4), 0.5));
+    out[o + 8] = Math.min(1, degradation[0] + (degradation[1] - degradation[0]) * rng.next() + 0.2 * small * rng.next());
   }
   const idx = Array.from({ length: count }, (_, i) => i).sort((a, b) => out[b * CRATER_STRIDE + 3] - out[a * CRATER_STRIDE + 3] || a - b);
   const sorted = new Float64Array(out.length);
@@ -449,11 +454,53 @@ function makeCraters(rng: Rng, count: number, rMin: number, rMax: number, Rkm: n
       sorted[o + 7] = v;
       sorted[o + 3] = Math.max(sorted[o + 3], rLo * (1 + rng.next()));
       sorted[o + 4] = depthOf(sorted[o + 3] * Rkm);
+      sorted[o + 8] = 0.05 * rng.next();
     }
   };
   flag(rays, 1, 0.012);
   flag(faculae, 2, 0.03);
+  flag(darkHalos, 3, 0.01);
   return sorted;
+}
+
+/**
+ * Secondary craters: chains and loose clusters of small craters thrown out radially by the largest fresh
+ * impacts (every rayed crater, and the biggest plain young ones), 2.5-7 radii out. Each is a crisp small
+ * crater with little ejecta of its own (flag 4). Appended to the young list.
+ */
+function makeSecondaries(rng: Rng, young: Float64Array, Rkm: number, g: number, relief: number): Float64Array {
+  const parents: number[] = [];
+  const count = young.length / CRATER_STRIDE;
+  for (let c = 0; c < count && parents.length < 6; c++) {
+    const o = c * CRATER_STRIDE;
+    if (young[o + 7] === 1 || (young[o + 7] === 0 && c < 3 && young[o + 3] * Rkm > 12)) parents.push(c);
+  }
+  const recs: number[] = [];
+  const halfT = 14 / g;
+  for (const c of parents) {
+    const o = c * CRATER_STRIDE;
+    const px = young[o], py = young[o + 1], pz = young[o + 2], pr = young[o + 3];
+    const chains = 4 + rng.int(5);
+    for (let ch = 0; ch < chains; ch++) {
+      const az = rng.next() * Math.PI * 2;
+      const n = 3 + rng.int(4);
+      const d0 = pr * (2.5 + 2.5 * rng.next());
+      const step = pr * (0.25 + 0.3 * rng.next());
+      for (let i = 0; i < n; i++) {
+        const dist = d0 + i * step;
+        const pos = offsetDir([px, py, pz], dist, az + (rng.next() - 0.5) * 0.08);
+        const r = pr * (0.07 + 0.09 * rng.next()) * (1 - (0.3 * i) / n);
+        if (r < 0.0025) continue;
+        const rk = r * Rkm;
+        recs.push(pos[0], pos[1], pos[2], r, ((relief * 400 * rk) / (1 + rk / halfT)) * 0.6, 0.15 + 0.1 * rng.next(), 0, 4, 0.1 * rng.next());
+      }
+    }
+  }
+  if (recs.length === 0) return young;
+  const out = new Float64Array(young.length + recs.length);
+  out.set(young);
+  out.set(recs, young.length);
+  return out;
 }
 
 // ---- plan ------------------------------------------------------------------------------------------------
@@ -573,8 +620,12 @@ export function planWorld(p: GenParams): WorldPlan {
   const oldN = Math.max(0, totalCraters - youngN + rayCount + faculaCount);
   const rMax = 0.12 * (0.7 + 0.6 * crng.next());
   const rMin = 0.0055;
-  const oldCraters = makeCraters(crng, oldN, rMin, rMax, Rkm, g, relief, arch.relax, 0, 0);
-  const youngCraters = makeCraters(crng, youngN, rMin, rMax * 0.5, Rkm, g, relief, arch.relax * 0.3, rayCount, faculaCount);
+  // Dark-halo craters: young impacts that dig dark material from under brighter plains (none on ice).
+  const darkCount = arch.icy || s.craterDensity < 0.2 ? 0 : Math.round(1 + rayCount * 0.7 * crng.next());
+  const oldCraters = makeCraters(crng, oldN, rMin, rMax, Rkm, g, relief, arch.relax, 0, 0, 0, [0.1, 0.9]);
+  const youngCraters = makeSecondaries(crng,
+    makeCraters(crng, youngN + darkCount, rMin, rMax * 0.5, Rkm, g, relief, arch.relax * 0.3, rayCount, faculaCount, darkCount, [0.0, 0.3]),
+    Rkm, g, relief);
 
   // --- volcanic rises (prefer the dichotomy boundary, Tharsis style) ---
   const vrng = new Rng(p.seed, 7);
@@ -842,7 +893,7 @@ export function buildHistory(plan: WorldPlan, st: SurfaceStats): HistoryEvent[] 
     const big = plan.basins[0];
     ev.push({ gyrAgo: Math.min(age - 0.1, 4.1), stage: 'Giant impacts', text: `${plan.basins.length} giant impact${plan.basins.length > 1 ? 's' : ''} carve multi-ring basins; ${big.name} spans ${fmt(big.r * 2 * R)} km (${Math.round((big.r * 2 * R) / (2 * R) * 100)}% of the diameter), ${km(big.depth)} deep${big.peak > 0 ? `, with a ${km(big.peak)} central peak` : ''}.${plan.chaosList.some((c) => c.r > 0.12) ? ' Seismic waves focus at its antipode and shatter the ground into chaos.' : ''}` });
   }
-  const nc = plan.oldCraters.length / 8;
+  const nc = plan.oldCraters.length / CRATER_STRIDE;
   if (nc > 50) ev.push({ gyrAgo: Math.min(age - 0.2, 3.9), stage: 'Heavy bombardment', text: `${fmt(nc)} large craters ${nc > 2500 ? 'saturate the old crust: crater on crater' : 'scar the crust'}${plan.arch.relax > 0.5 ? '; the warm ice slowly relaxes the biggest ones flat' : ''}.` });
   if (plan.palimpsests.length) ev.push({ gyrAgo: 3.8, stage: 'Relaxation', text: `${plan.palimpsests.length} ancient craters sag into flat bright palimpsests.` });
   if (plan.rises.length > 0) ev.push({ gyrAgo: Math.min(age - 0.5, 3.7), stage: 'Mantle plume', text: `A mantle plume domes the crust into ${plan.rises.length > 1 ? `${plan.rises.length} volcanic rises` : 'a volcanic rise'} ${km(plan.rises[0].h)} high.` });
@@ -873,9 +924,13 @@ export function buildHistory(plan: WorldPlan, st: SurfaceStats): HistoryEvent[] 
   if (st.capCoverage > 0.001) ev.push({ gyrAgo: 0.5, stage: 'Polar caps', text: `CO₂ and water frost build layered polar domes ${km(plan.capDome)} thick with spiral troughs, covering ${pct(st.capCoverage)}.` });
   if (st.duneCoverage > 0.002) ev.push({ gyrAgo: 0.1, stage: 'Wind', text: `Thin winds sweep sand into dune seas over ${pct(st.duneCoverage)} of the surface.` });
   if (st.playaCoverage > 0.001) ev.push({ gyrAgo: 0.3, stage: 'Deposits', text: plan.archetype === 'sulfur' ? 'Plume fallout paints rings of sulfur and SO₂ frost around the vents.' : plan.icy ? `Geyser and frost deposits brighten ${pct(st.playaCoverage)} of the surface.` : `Closed basins dry out into bright salt flats (${pct(st.playaCoverage)}).` });
-  let rayed = 0, fac = 0;
-  for (let o = 7; o < plan.youngCraters.length; o += 8) { if (plan.youngCraters[o] === 1) rayed++; else if (plan.youngCraters[o] === 2) fac++; }
-  if (rayed > 0) ev.push({ gyrAgo: 0.05, stage: 'Fresh impacts', text: `${rayed} young impact${rayed > 1 ? 's' : ''} splash bright rays across the older terrain.` });
+  let rayed = 0, fac = 0, dark = 0, sec = 0;
+  for (let o = 7; o < plan.youngCraters.length; o += CRATER_STRIDE) {
+    const f = plan.youngCraters[o];
+    if (f === 1) rayed++; else if (f === 2) fac++; else if (f === 3) dark++; else if (f === 4) sec++;
+  }
+  if (rayed > 0) ev.push({ gyrAgo: 0.05, stage: 'Fresh impacts', text: `${rayed} young impact${rayed > 1 ? 's' : ''} splash bright rays across the older terrain${sec > 0 ? `, and ${fmt(sec)} secondary craters pepper the ground in chains around the largest` : ''}.` });
+  if (dark > 0) ev.push({ gyrAgo: 0.08, stage: 'Dark halos', text: `${dark} impact${dark > 1 ? 's' : ''} dig dark material from under the plains and spread it in dark halos.` });
   if (fac > 0) ev.push({ gyrAgo: 0.02, stage: 'Faculae', text: `Brine seeps up through ${fac} young crater floor${fac > 1 ? 's' : ''}, leaving dazzling salt faculae.` });
   ev.push({ gyrAgo: 0, stage: 'Today', text: `${ARCHETYPE_LABELS[plan.archetype]}: ${b.surfaceTempK.toFixed(0)} K mean surface, ${atmoText(b.atmospherePressureBar)} ${b.atmosphereKind}, ${b.tectonics} lid. Relief ${km(st.minHeight)} to +${km(st.maxHeight)} (${(((st.maxHeight - st.minHeight) / (R * 1000)) * 100).toFixed(1)}% of the radius).` });
   ev.sort((a, c) => c.gyrAgo - a.gyrAgo);
@@ -930,9 +985,9 @@ export function buildPois(plan: WorldPlan): Poi[] {
   const yc = plan.youngCraters;
   for (let o = 0; o < yc.length; o += CRATER_STRIDE) {
     const flag = yc[o + 7];
-    if (flag !== 1 && flag !== 2) continue;
+    if (flag !== 1 && flag !== 2 && flag !== 3) continue;
     const r = yc[o + 3];
-    add('crater', makeName(rng), [yc[o], yc[o + 1], yc[o + 2]], r, r * 2 * Rk * 3 + 40, `${flag === 2 ? 'crater with salt faculae' : 'fresh rayed crater'} · ${fmt(r * 2 * Rk)} km`);
+    add('crater', makeName(rng), [yc[o], yc[o + 1], yc[o + 2]], r, r * 2 * Rk * 3 + 40, `${flag === 2 ? 'crater with salt faculae' : flag === 3 ? 'dark-halo crater' : 'fresh rayed crater'} · ${fmt(r * 2 * Rk)} km`);
   }
   if (plan.capDome > 0) {
     for (const [sgn, nm] of [[1, 'Planum Boreum'], [-1, 'Planum Australe']] as const) {

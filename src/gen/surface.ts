@@ -161,7 +161,9 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
       // Impacts: ejecta gravel, bright rim massifs, rays and faculae.
       if (ejecta > 0) w[GRAVEL] += 1.6 * ejecta;
       if (rim > 0) { w[HIGH] += 0.8 * rim; w[GRAVEL] += 0.4 * rim; }
+      const darkHalo = rayV >= 245 && rayV < 255 ? (rayV - 244) / 10 : 0;
       if (rayV === 255) w[SALT] += 6;
+      else if (darkHalo > 0) { w[BASALT] += 2 * darkHalo; w[GRAVEL] += 0.6 * darkHalo; }
       else if (rayV > 0) { const r = rayV / 240; if (arch === 'sulfur') { w[SALT] += 2.5 * r; w[DUST] += 0.5 * r; } else { w[icy ? ICE : HIGH] += 1.5 * r; w[SALT] += 0.8 * r; } }
       if (floorV === 255 && !icy) w[DUST] += 0.5;
       // Tectonics.
@@ -203,6 +205,7 @@ export function generateSurfaceFace(plan: WorldPlan, inp: SurfaceFaceInput): Sur
       else if (cap > 0.5) unit = U.POLAR_CAP;
       else if (rayV === 255) unit = U.FACULA;
       else if (vk === VK.CALDERA) unit = U.FLOWS;
+      else if (darkHalo > 0.45) unit = U.DARK_HALO;
       else if (rayV > 120) unit = arch === 'sulfur' ? U.PLUME_DEPOSITS : U.RAYED;
       else if (vk === VK.CRYO) unit = U.CRYO_DOME;
       else if (vk === VK.BLOCK) unit = U.BLOCK_MOUNTAIN;

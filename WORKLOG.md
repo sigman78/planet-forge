@@ -674,3 +674,21 @@ Newest entries at the bottom. Times are local.
   (the palette seed is a hash of archetype, name and radius). Before/after orbit shots of four worlds:
   `.playwright-mcp/toneshots.js` (tone-<world>-0/1.jpg). The effect is deliberately moderate; the slider goes
   to 1.5.
+- **02:15** **Variance slice 2, crater population (user: "lets go and do crater thing first, then winds").**
+  Crater records carry a degradation value (`CRATER_STRIDE` 9: ... flag, deg). The old population draws
+  deg uniformly in 0.1-0.9 plus a bonus for small craters (they fill in the time a big rim only softens);
+  the young one 0-0.3; flagged craters (rays, faculae, dark halos) stay under 0.05. In `rasterCraters` wear
+  cuts the depth by up to 55%, the rim by 80% and the peak by 80%, flattens the floor, fades the ejecta
+  blanket as (1 - deg)^1.5 and makes the outline more ragged; `craterProfileWorn` rounds the rim crest over
+  a band that widens with wear and sinks it below the fresh crest, so worn craters are soft bowls instead of
+  the same crisp profile at a smaller depth. A first pass (deg 0.3-1.0 skewed high, depth -65%, rim -85%)
+  erased too much: hillshades showed the big old craters as thin ragged rings. Secondary craters
+  (`makeSecondaries`, flag 4): every rayed crater and the largest plain young craters throw 4-8 chains of
+  3-6 craters at 2.5-5 radii, each 7-16% of the parent radius, with a quarter of the ejecta; 137 on grey
+  moon seed 2. Dark-halo craters (flag 3, unit 30 "dark-halo crater"): one to a few young impacts on
+  non-icy cratered worlds dig dark material and spread it to ~3 radii as a ragged blanket (values 245-254
+  in the ray channel, basalt + gravel in the splat, a 0.8 tint in the colour map; the first tint of 0.66
+  was a black blob). History gets a "Dark halos" event and the secondary count; dark-halo craters are
+  points of interest. The extra rng draws per crater move every crater after the first, so a seed's world
+  changes. No render-time cost; generation time unchanged (6.6 s at res 512 in node). Shots:
+  `.playwright-mcp/cratershots.js` (crater-before/after-*.jpg on grey moon 2), hillshades in the scratchpad.

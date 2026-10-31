@@ -464,6 +464,23 @@ export function craterProfile(x: number, rim: number, peak: number, floorFrac: n
   return (rim * (Math.pow(x, -3) - tail)) / (1 - tail);
 }
 
+/**
+ * Degraded crater profile: the rim crest is rounded over a band that widens with wear (the crisp profile has a
+ * kink at x = 1) and sinks below the fresh crest. `deg` 0 is craterProfile.
+ */
+export function craterProfileWorn(x: number, rim: number, peak: number, floorFrac: number, deg: number): number {
+  if (deg <= 0.02) return craterProfile(x, rim, peak, floorFrac);
+  const w = 0.08 + 0.45 * deg;
+  if (x < 1 - w || x > 1 + w) return craterProfile(x, rim, peak, floorFrac);
+  // Inside and outside branches both capped at the rim height, blended across the crest, then the plateau
+  // the two caps make is pulled down into a rounded crest.
+  const inner = Math.min(rim, craterProfile(Math.min(x, 1), rim, peak, floorFrac));
+  const outer = Math.min(rim, craterProfile(Math.max(x, 1), rim, 0, floorFrac));
+  const t = (x - (1 - w)) / (2 * w);
+  const s = t * t * (3 - 2 * t);
+  return inner + (outer - inner) * s - rim * 0.35 * deg * Math.sin(Math.PI * t);
+}
+
 function rasterCraters(ctx: TerrainContext, face: number, C: Float64Array, out: Float32Array, dirs: Float32Array,
   featA: Uint8Array, featB: Uint8Array, fresh: boolean): void {
   const N = ctx.N, T = N + 2;
@@ -472,13 +489,20 @@ function rasterCraters(ctx: TerrainContext, face: number, C: Float64Array, out: 
   const Rkm = ctx.plan.bulk.radiusKm;
   for (let c = 0; c < count; c++) {
     const o = c * CRATER_STRIDE;
-    const cx = C[o], cy = C[o + 1], cz = C[o + 2], R = C[o + 3], D = C[o + 4];
-    const rim = C[o + 5], peak = C[o + 6], flag = C[o + 7];
-    const reach = flag === 1 ? 9 : EJECTA;
+    const cx = C[o], cy = C[o + 1], cz = C[o + 2], R = C[o + 3], D0 = C[o + 4];
+    const rim0 = C[o + 5], peak0 = C[o + 6], flag = C[o + 7], deg = C[o + 8];
+    // Wear: the bowl fills, the rim erodes faster than the bowl fills, the peak is buried, the floor flattens,
+    // the ejecta blanket fades, the rim outline gets more ragged.
+    const D = D0 * (1 - 0.55 * deg);
+    const rim = rim0 * (1 - 0.8 * deg);
+    const peak = peak0 * (1 - 0.8 * deg);
+    const reach = flag === 1 ? 9 : flag === 3 ? 3.2 : EJECTA;
     const A = R * reach;
     if (!capBox(face, N, cx, cy, cz, A, _box)) continue;
     const cosA = Math.cos(A);
-    const floorFrac = R * Rkm > 25 ? 0.7 : 1.5;
+    const floorFrac = (R * Rkm > 25 ? 0.7 : 1.5) * (1 - 0.45 * deg);
+    const ejK = (flag === 4 ? 0.25 : 1) * Math.pow(1 - deg, 1.5);
+    const irrAmp = 0.07 + 0.05 * deg;
     // Tangent frame for ray azimuths.
     let ex = 0, ey = 0, ez = 0, fx = 0, fy = 0, fz = 0;
     if (flag === 1) {
@@ -487,7 +511,7 @@ function rasterCraters(ctx: TerrainContext, face: number, C: Float64Array, out: 
       ex *= l; ey *= l; ez *= l;
       fx = cy * ez - cz * ey; fy = cz * ex - cx * ez; fz = cx * ey - cy * ex;
     }
-    const ejW = fresh ? 1 : 0.45;
+    const ejW = (fresh ? 1 : 0.45) * ejK;
     for (let y = _box.y0; y <= _box.y1; y++) {
       for (let x = _box.x0; x <= _box.x1; x++) {
         const idx = y * T + x;
@@ -497,16 +521,26 @@ function rasterCraters(ctx: TerrainContext, face: number, C: Float64Array, out: 
         const ang = Math.acos(Math.min(1, dot));
         const xn0 = ang / R;
         if (xn0 < EJECTA) {
-          const irr = 1 + 0.07 * n.simplex(dx * 7 / R, dy * 7 / R, dz * 7 / R + c);
+          const irr = 1 + irrAmp * n.simplex(dx * 7 / R, dy * 7 / R, dz * 7 / R + c);
           const xn = xn0 / irr;
-          out[idx] += D * craterProfile(xn, rim, peak, floorFrac);
-          if (xn > 0.8 && xn < 2.1) {
+          out[idx] += D * craterProfileWorn(xn, rim, peak, floorFrac, deg);
+          if (xn > 0.8 && xn < 2.1 && ejW > 0.02) {
             const e = smoothstep(2.1, 1.0, xn) * ejW;
             const cur = featA[idx * 4];
             const v = Math.round(e * 255);
             if (v > cur) featA[idx * 4] = v;
           }
           if (flag === 2 && xn < 0.55) featB[idx * 4 + 3] = 255;
+        }
+        if (flag === 3 && xn0 > 0.6) {
+          // Dark halo: a ragged dark blanket out to ~3 radii, strongest just outside the rim (values 245-254).
+          const rn = n.simplex(dx * 5 / R + c * 0.7, dy * 5 / R, dz * 5 / R);
+          const halo = smoothstep(3.1, 1.3, xn0 + 0.5 * rn) * smoothstep(0.6, 1.0, xn0);
+          if (halo > 0.08) {
+            const v = 245 + Math.min(9, Math.round(halo * 9));
+            const cur = featB[idx * 4 + 3];
+            if (cur !== 255 && v > cur) featB[idx * 4 + 3] = v;
+          }
         }
         if (flag === 1 && xn0 > 0.7) {
           const az = Math.atan2(dx * fx + dy * fy + dz * fz, dx * ex + dy * ey + dz * ez);

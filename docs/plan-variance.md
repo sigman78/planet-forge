@@ -25,7 +25,7 @@ leading hemisphere, frost at the poles, dust streaks downwind of craters.
    Blurred over a few texels so no unit edge becomes a drawn line. Applied as one multiply in the terrain
    and rock shaders (one `textureLod` at the data LOD, which the AO already pays). A Look slider sets its
    strength. Cached planets get it for free because nothing in the data changes.
-2. **Crater population** (generator). A degradation continuum instead of two freshness classes: rim
+2. **Crater population** (done, see below) (generator). A degradation continuum instead of two freshness classes: rim
    sharpness, depth/diameter and ejecta extent fall with age so old craters are soft bowls with no rim and
    young ones crisp; secondary chains and clusters around the largest fresh craters; a few crater
    clusters from binary impacts. Bright and dark halo craters as unit ids so the colour map can use them.
@@ -52,3 +52,6 @@ touches the cube stage ordering.
   en-echelon strands.
 - Slice 1, the baked colour map (`src/core/tone.ts`, Look slider "colour map"). Bake ~530 ms at res 512 on
   load; ice worlds barely change (their units are neutral); wild worlds take the rocky palette for now.
+- Slice 2, the crater population: a degradation continuum per crater (depth, rim, peak, floor, ejecta and
+  outline all follow it; worn craters are soft bowls), secondary chains around the largest fresh craters,
+  dark-halo craters as unit 30. Binary-impact clusters were left out.

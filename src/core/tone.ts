@@ -51,6 +51,7 @@ const UNIT_TINT: RGB[] = [
   [1.02, 1.02, 1.02],   // 27 block mountain
   [0.9, 0.92, 0.98],    // 28 fissure
   [0.78, 0.72, 0.66],   // 29 dark dirty ice
+  [0.8, 0.79, 0.81],    // 30 dark-halo crater
 ];
 
 /** Family overrides: the same unit means a different material on an ice shell or a volcanic world. */
