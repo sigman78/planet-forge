@@ -414,9 +414,14 @@ export function flowToWetness(acc: Float32Array, N: number, padMap?: PadMap, fil
   const pm = padMap ?? buildPadMap(N, 4);
   const { T, P, W, map } = pm;
   const ref = Math.log(1 + N * N * 0.05);
+  const passes = Math.max(2, Math.round(N / 128));
+  // Channels are where the flow exceeds the sheet around it: the multi-direction accumulation grows along
+  // every slope (a 200-texel slope ends at acc ~200, which would read as a river), so the local mean over
+  // a few texels is subtracted first. A planar slope then carries nothing visible; a valley keeps its excess.
+  const sheet = blurCross(acc, N, pm, passes);
   const flow01 = new Float32Array(acc.length);
   for (let i = 0; i < acc.length; i++) {
-    const v = Math.log(1 + Math.max(0, acc[i] - 1)) / ref;
+    const v = Math.log(1 + Math.max(0, acc[i] - sheet[i] - 1)) / ref;
     flow01[i] = v > 1 ? 1 : v;
   }
   if (fill) {
@@ -430,7 +435,6 @@ export function flowToWetness(acc: Float32Array, N: number, padMap?: PadMap, fil
   let a = new Float32Array(acc.length);
   for (let i = 0; i < acc.length; i++) a[i] = Math.max(0, (flow01[i] - 0.35) / 0.65);
   let b = new Float32Array(acc.length);
-  const passes = Math.max(2, Math.round(N / 128));
   for (let it = 0; it < passes; it++) {
     for (let f = 0; f < 6; f++)
       for (let y = 1; y <= N; y++) {
@@ -445,4 +449,24 @@ export function flowToWetness(acc: Float32Array, N: number, padMap?: PadMap, fil
   }
   refillGutters(a, N);
   return { flow01, wet01: a };
+}
+
+/** Five-point blur, `passes` times, across faces (the gutters are refilled between passes via the pad map). */
+function blurCross(src: Float32Array, N: number, pm: PadMap, passes: number): Float32Array {
+  const { T, P, W, map } = pm;
+  let a = src.slice();
+  let b = new Float32Array(src.length);
+  for (let it = 0; it < passes; it++) {
+    for (let f = 0; f < 6; f++)
+      for (let y = 1; y <= N; y++) {
+        let slot = (f * W + (y + P - 1)) * W + P;
+        let idx = (f * T + y) * T + 1;
+        for (let x = 1; x <= N; x++, slot++, idx++) {
+          b[idx] = (a[idx] * 2 + a[map[slot - 1]] + a[map[slot + 1]] + a[map[slot - W]] + a[map[slot + W]]) / 6;
+        }
+      }
+    const t = a; a = b; b = t;
+  }
+  refillGutters(a, N);
+  return a;
 }

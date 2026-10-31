@@ -637,8 +637,13 @@ Newest entries at the bottom. Times are local.
     directions on the filled surface (every lower neighbour, weighted by slope over distance; the discovery
     parent only where no neighbour is lower), so a smooth slope carries a sheet and only valleys concentrate,
     and `flowToWetness` fades the flow out over the first metre of ponding depth (sheet flow on filled flats;
-    it reappears at the spill point). The flow debug view is now smooth sheets; the line is gone. Flow stage
-    629 -> 740-990 ms at res 512 in the CLI.
+    it reappears at the spill point). Multi-direction accumulation grows along every slope (a 200-texel
+    slope ends at acc ~200, which the log scale read as a river: land above the channel threshold went from
+    10.9% to 17.4%), so the local sheet (a few-texel cross-face blur of the accumulation) is subtracted
+    before the log: channels are the excess over their surroundings. Rust 26508 at res 512, land fraction:
+    flow above the channel threshold 10.9% -> 2.1%, any wetness 80.9% -> 28.1% (the old numbers were mostly
+    the parallel chains). The line is gone from the render; flow stage 629 -> ~750 ms in the CLI. On
+    sea-less worlds every closed basin deeper than a metre now shows no channel on its floor.
   - The radial graben (Rust 26508 has 44 of them, 0.2-0.4 deg wide, 25-50 deg long) were exact great-circle
     segments with a 0.7 deg shared wiggle, constant depth and blunt ends, and the parallel chasma clones were
     offset copies of the same arc. Now each trough's axis wanders along the arc with its own two-octave noise
